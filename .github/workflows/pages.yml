@@ -1,0 +1,65 @@
+name: Deploy map to GitHub Pages
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      # Optional: rebuild site/data/fiber_blocks.js from a fresh FCC file instead of
+      # the committed one.  Set the repository variable FCC_DATA_URL (Settings ->
+      # Secrets and variables -> Actions -> Variables) to a URL of the FCC
+      # "California / Fiber to the Premises" availability zip.
+      - name: Rebuild map data from FCC_DATA_URL
+        if: vars.FCC_DATA_URL != ''
+        env:
+          FCC_DATA_URL: ${{ vars.FCC_DATA_URL }}
+        run: |
+          mkdir -p data/raw
+          curl -sSfL "$FCC_DATA_URL" -o "data/raw/$(basename "$FCC_DATA_URL")"
+          python scripts/build_map.py
+
+      - name: Check the site has data
+        run: test -s site/data/fiber_blocks.js
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    # Only the default branch is published; other branches just build and test.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - id: deployment
+        uses: actions/deploy-pages@v4

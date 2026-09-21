@@ -88,6 +88,19 @@ cable if you download that file too), `--county` (any 5-digit state+county FIPS,
 e.g. `06001` for Alameda; run `scripts/fetch_blocks.py --county 001` first),
 `--as-of` to label the vintage.
 
+## Deploying to GitHub Pages
+
+`.github/workflows/pages.yml` runs the tests and publishes `site/` to GitHub
+Pages on every push to the default branch (other branches only build and test).
+The built `site/data/fiber_blocks.js` is committed, so the deploy needs nothing
+from the FCC; to refresh the data either rebuild locally and commit the new
+file, or set the repository variable `FCC_DATA_URL` to a URL of the FCC
+California fiber zip and the workflow rebuilds it on each deploy.
+
+One-time setup: in the repository *Settings -> Pages*, set **Source** to
+**GitHub Actions** (the workflow also tries to enable this itself). The map is
+then served at `https://<user>.github.io/<repo>/`.
+
 ## Layout
 
 ```
@@ -98,7 +111,7 @@ site/index.html           the map (Leaflet, no build step)
 tests/                    unit tests on a small SYNTHETIC fixture (`make test`)
 ```
 
-`data/raw/` and `site/data/` are git-ignored; rebuild them with the commands above.
+`data/raw/` is git-ignored; `site/data/fiber_blocks.js` is committed (see above).
 
 ## Sources
 

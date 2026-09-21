@@ -21,5 +21,5 @@ serve:                     ## open http://localhost:$(PORT)
 test:
 	$(PY) -m unittest discover -s tests -v
 
-clean:
+clean:                     ## remove the generated map data (it is committed; rebuild with make build)
 	rm -f site/data/fiber_blocks.js
