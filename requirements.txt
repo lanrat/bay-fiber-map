@@ -1,1 +1,3 @@
 requests>=2.31
+# only for scripts/fetch_buildings.py:
+shapely>=2.0

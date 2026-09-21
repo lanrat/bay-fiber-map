@@ -98,6 +98,12 @@
   .msg { color: var(--ink-2); font-size: 12px; min-height: 1em; margin-top: 4px; }
   .banner { margin: 10px 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--hair); background: var(--plane); font-size: 13px; }
   .banner code { font-size: 12px; }
+  .note { color: var(--muted); font-size: 11px; margin: 4px 0 0; }
+  .tip .cov { margin-top: 6px; font-weight: 600; }
+  .tip .cov.partial { color: var(--ink-2); }
+  .tip a.fcc { display: inline-block; margin-top: 8px; color: var(--accent); font-weight: 600; text-decoration: none; }
+  .tip a.fcc:hover { text-decoration: underline; }
+  .msg a { color: var(--accent); }
 
   /* tooltip / popup */
   .leaflet-tooltip.blk, .leaflet-popup-content-wrapper {
@@ -171,6 +177,8 @@
   </div>
   <ul class="list" id="legend" style="margin-top:6px"></ul>
   <div class="ctl"><input type="checkbox" id="showNone" checked><label for="showNone">Show blocks with no match</label></div>
+  <div class="ctl"><input type="checkbox" id="showBldg" checked><label for="showBldg">Show buildings when zoomed in</label></div>
+  <p class="note" id="bldgNote"></p>
 
   <form class="row" id="searchForm" autocomplete="off">
     <input type="search" id="q" placeholder="Jump to an address in SF…" aria-label="Address search">
@@ -218,6 +226,7 @@
 
   const map = L.map('map', { preferCanvas: true, zoomControl: false }).setView([37.7599, -122.4416], 12.5);
   L.control.zoom({ position: 'topright' }).addTo(map);
+  window.fiberMap = map;   // handy for the console and for tests
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(map);
   function setBase() { /* theme handled by the CSS filter on .leaflet-tile-pane */ }
@@ -237,7 +246,12 @@
     `so a block is colored by the best match among its locations; counts are FCC “serviceable locations” (roughly buildings), not housing units.`;
 
   // ---- filter state -------------------------------------------------------
-  const state = { isps: new Set(providers.map((_, i) => i)), minSpeed: 1000, biz: false, mode: 'speed', showNone: true };
+  const state = { isps: new Set(providers.map((_, i) => i)), minSpeed: 1000, biz: false, mode: 'speed', showNone: true, showBldg: true };
+  const denomAll = meta.denominator === 'all';   // true when a satellite/cable file supplied every location per block
+  const BLDG_ZOOM = 15;
+  $('bldgNote').textContent = denomAll
+    ? `Zoom in to see buildings. Solid buildings sit in blocks where the selected ISPs reach every location; faded ones in blocks they reach only partly.`
+    : `Zoom in to see buildings. Solid buildings sit in blocks where the selected ISPs reach every fiber-served location; faded ones where they reach only some. Totals count fiber-served locations only, so blocks with unserved homes can look complete.`;
   const MINOR = 10;   // ISPs with fewer residential locations are collapsed by default
   const minor = providers.filter(p => p.locations_res < MINOR).length;
   $('ispMore').textContent = minor ? `+${minor} more` : '';
@@ -259,6 +273,7 @@
   $('biz').addEventListener('change', (e) => { state.biz = e.target.checked; refresh(); });
   document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', (e) => { state.mode = e.target.value; refresh(); }));
   $('showNone').addEventListener('change', (e) => { state.showNone = e.target.checked; restyle(); });
+  $('showBldg').addEventListener('change', (e) => { state.showBldg = e.target.checked; syncBuildings(); });
 
   // ---- per-block evaluation ------------------------------------------------
   // p.c = [[res, [[ispIdx, down, up], ...], count], ...]  (see scripts/build_map.py)
@@ -277,7 +292,9 @@
       }
       if (hit) nMatch += cnt;
     }
-    return { nAll, nMatch, best, nIsps: matched.size, per };
+    const nTotal = (p.t ? p.t[0] + (state.biz ? p.t[1] : 0) : nAll) || nAll;
+    const cov = nMatch === 0 ? 'none' : nMatch >= nTotal ? 'full' : 'partial';
+    return { nAll, nMatch, best, nIsps: matched.size, per, nTotal, cov };
   }
   function tierOf(ev) {
     if (!ev.nMatch) return null;
@@ -313,35 +330,122 @@
   }
 
   // ---- map layer ----------------------------------------------------------
+  const layerByGeoid = new Map();
+  let buildingsOn = false;   // true while the building layer is visible (zoomed in)
   function styleFor(p) {
     const { tier } = evals.get(p.geoid);
-    if (!tier) return { fillColor: color('none'), fillOpacity: state.showNone ? 0.22 : 0, color: color('none'), weight: state.showNone ? 0.4 : 0, opacity: state.showNone ? 0.5 : 0 };
-    return { fillColor: color(tier.key), fillOpacity: 0.7, color: css('--surface'), weight: 0.6, opacity: 0.9 };
+    const dim = buildingsOn ? 0.25 : 1;
+    if (!tier) return { fillColor: color('none'), fillOpacity: state.showNone ? 0.22 * dim : 0, color: color('none'), weight: state.showNone ? 0.4 : 0, opacity: state.showNone ? 0.5 : 0 };
+    return { fillColor: color(tier.key), fillOpacity: 0.7 * dim, color: buildingsOn ? color(tier.key) : css('--surface'), weight: buildingsOn ? 1 : 0.6, opacity: 0.9 };
   }
-  function detailHtml(p) {
+  function fccUrl(lat, lng) {
+    const m = /^(\w{3})\w* (\d{4})$/.exec(meta.as_of || '');
+    const version = m ? m[1].toLowerCase() + m[2] : 'dec2025';
+    const sp = state.minSpeed >= 1000 ? '1000_100' : state.minSpeed >= 250 ? '250_25' : state.minSpeed >= 100 ? '100_20' : '25_3';
+    return `https://broadbandmap.fcc.gov/location-summary/fixed?version=${version}&zoom=17&vlon=${lng.toFixed(6)}&vlat=${lat.toFixed(6)}&br=r&speed=${sp}&tech=3`;
+  }
+  function centerOf(geoid) {
+    const l = layerByGeoid.get(geoid);
+    return l ? l.getBounds().getCenter() : null;
+  }
+  function detailHtml(p, at) {
     const { ev, tier } = evals.get(p.geoid);
     const head = tier
       ? `<span class="sw" style="background:${color(tier.key)}"></span>${state.mode === 'speed' ? 'Up to ' + speed(ev.best) : ev.nIsps + (ev.nIsps === 1 ? ' ISP' : ' ISPs')} · ${fmt(ev.nMatch)} matching location${ev.nMatch === 1 ? '' : 's'}`
       : `<span class="sw" style="background:${color('none')}"></span>${ev.nAll ? 'No ISP matches the filters' : 'No fiber reported'}`;
     const rows = [...ev.per.entries()].sort((a, b) => b[1].n - a[1].n).map(([i, e]) =>
       `<tr class="${e.nMatch ? '' : 'off'}"><td>${providers[i].name}</td><td class="n">${fmt(e.n)}</td><td class="n">${speed(e.down)} ↓ ${speed(e.up)} ↑</td></tr>`).join('');
+    const what = denomAll ? 'location' : 'fiber-served location';
+    const cov = ev.cov === 'full' ? `<div class="cov">Reaches all ${fmt(ev.nTotal)} ${what}s in this block</div>`
+      : ev.cov === 'partial' ? `<div class="cov partial">Reaches ${fmt(ev.nMatch)} of ${fmt(ev.nTotal)} ${what}s in this block (${pct(ev.nMatch, ev.nTotal)}); the FCC data does not say which</div>` : '';
+    const c = at || centerOf(p.geoid);
+    const link = c ? `<a class="fcc" href="${fccUrl(c.lat, c.lng)}" target="_blank" rel="noopener">Open this spot in the FCC map (per-address detail) ↗</a>` : '';
     return `<div class="tip"><div class="hd">${head}</div><div class="id">Block ${p.geoid}</div>` +
       (rows ? `<table><tr><th>ISP</th><th style="text-align:right">Locations</th><th>Max advertised</th></tr>${rows}</table>` : '') +
-      `<div class="sum">${fmt(ev.nAll)} fiber-served location${ev.nAll === 1 ? '' : 's'} · ${fmt(p.hu)} housing units · ${fmt(p.pop)} residents (2020)</div></div>`;
+      cov +
+      `<div class="sum">${fmt(ev.nAll)} fiber-served location${ev.nAll === 1 ? '' : 's'}${denomAll ? ` of ${fmt(ev.nTotal)} total` : ''} · ${fmt(p.hu)} housing units · ${fmt(p.pop)} residents (2020)</div>${link}</div>`;
   }
   recompute();
   let hovered = null;
   const layer = L.geoJSON(data.blocks, {
     style: f => styleFor(f.properties),
     onEachFeature: (f, l) => {
+      layerByGeoid.set(f.properties.geoid, l);
       l.bindTooltip(() => detailHtml(f.properties), { sticky: true, className: 'blk', opacity: 1, direction: 'top', offset: [0, -8] });
       l.on('mouseover', () => { if (evals.get(f.properties.geoid).tier || state.showNone) { hovered = l; l.setStyle({ weight: 2, color: css('--ink'), opacity: 1 }); l.bringToFront(); } });
       l.on('mouseout', () => { if (hovered === l) { l.setStyle(styleFor(f.properties)); hovered = null; } });
-      l.on('click', () => { if (evals.get(f.properties.geoid).tier || state.showNone) L.popup({ maxWidth: 340 }).setLatLng(l.getBounds().getCenter()).setContent(detailHtml(f.properties)).openOn(map); });
+      l.on('click', (e) => { if (evals.get(f.properties.geoid).tier || state.showNone) L.popup({ maxWidth: 340 }).setLatLng(e.latlng).setContent(detailHtml(f.properties, e.latlng)).openOn(map); });
     },
   }).addTo(map);
   if (feats.length) map.fitBounds(layer.getBounds().pad(0.02));
-  function restyle() { layer.eachLayer(l => l.setStyle(styleFor(l.feature.properties))); }
+  function restyle() { layer.eachLayer(l => l.setStyle(styleFor(l.feature.properties))); restyleBuildings(); }
+
+  // ---- building footprints (DataSF), loaded per zoom-14 tile when zoomed in ----
+  // chunk format: {g:[geoid...], b:[[gi, height_m, x0, y0, [dx,dy,...]], ...]} in 1e-6 degrees, delta-encoded
+  const propsByGeoid = new Map(feats.map(f => [f.properties.geoid, f.properties]));
+  const bldgIndex = new Set();
+  let bldgReady = false;
+  fetch('data/buildings/index.json').then(r => r.ok ? r.json() : null).then(ix => {
+    if (ix) { ix.tiles.forEach(t => bldgIndex.add(t)); bldgReady = true; syncBuildings(); }
+    else $('bldgNote').textContent = 'Building footprints are not built (run scripts/fetch_buildings.py).';
+  }).catch(() => {});
+  const bldgChunks = new Map();     // "x_y" -> L.LayerGroup (or 'loading')
+  const bldgPolys = [];             // [polygon, geoid]
+  function tileXY(lng, lat, z) {
+    const n = 2 ** z, r = lat * Math.PI / 180;
+    return [Math.floor((lng + 180) / 360 * n), Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n)];
+  }
+  function bldgStyle(geoid) {
+    const e = evals.get(geoid);
+    if (!e) return { fillColor: color('none'), fillOpacity: 0.15, color: color('none'), weight: 0.5, opacity: 0.4 };
+    const { ev, tier } = e;
+    if (!tier) return { fillColor: color('none'), fillOpacity: state.showNone ? 0.3 : 0.08, color: color('none'), weight: 0.5, opacity: 0.6 };
+    if (ev.cov === 'full') return { fillColor: color(tier.key), fillOpacity: 0.85, color: css('--surface'), weight: 0.6, opacity: 0.9 };
+    return { fillColor: color(tier.key), fillOpacity: 0.3, color: color(tier.key), weight: 1, opacity: 0.9, dashArray: '3 3' };
+  }
+  function decodeChunk(data) {
+    const group = L.layerGroup();
+    for (const [gi, h, x0, y0, d] of data.b) {
+      const geoid = data.g[gi];
+      const ring = [[y0 / 1e6, x0 / 1e6]];
+      let x = x0, y = y0;
+      for (let i = 0; i < d.length; i += 2) { x += d[i]; y += d[i + 1]; ring.push([y / 1e6, x / 1e6]); }
+      const poly = L.polygon(ring, bldgStyle(geoid));
+      const p = propsByGeoid.get(geoid);
+      if (p) {
+        poly.bindTooltip(() => detailHtml(p, poly.getBounds().getCenter()) + (h ? `<div class="tip"><div class="sum">Building height ≈ ${h} m</div></div>` : ''),
+          { sticky: true, className: 'blk', opacity: 1, direction: 'top', offset: [0, -8] });
+        poly.on('click', (e) => L.popup({ maxWidth: 340 }).setLatLng(e.latlng).setContent(detailHtml(p, e.latlng)).openOn(map));
+      }
+      bldgPolys.push([poly, geoid]);
+      group.addLayer(poly);
+    }
+    return group;
+  }
+  function syncBuildings() {
+    const want = bldgReady && state.showBldg && map.getZoom() >= BLDG_ZOOM;
+    if (want !== buildingsOn) { buildingsOn = want; layer.eachLayer(l => l.setStyle(styleFor(l.feature.properties))); }
+    if (!want) { for (const g of bldgChunks.values()) if (g !== 'loading') map.removeLayer(g); return; }
+    const b = map.getBounds();
+    const [x0, y0] = tileXY(b.getWest(), b.getNorth(), 14), [x1, y1] = tileXY(b.getEast(), b.getSouth(), 14);
+    const visible = new Set();
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+      const key = `${x}_${y}`;
+      if (!bldgIndex.has(key)) continue;
+      visible.add(key);
+      const have = bldgChunks.get(key);
+      if (have === 'loading') continue;
+      if (have) { if (!map.hasLayer(have)) have.addTo(map); continue; }
+      bldgChunks.set(key, 'loading');
+      fetch(`data/buildings/14_${key}.json`).then(r => r.json()).then(data => {
+        const g = decodeChunk(data); bldgChunks.set(key, g);
+        if (buildingsOn && map.getZoom() >= BLDG_ZOOM) g.addTo(map);
+      }).catch(() => bldgChunks.delete(key));
+    }
+    for (const [key, g] of bldgChunks) if (g !== 'loading' && !visible.has(key)) map.removeLayer(g);
+  }
+  function restyleBuildings() { for (const [poly, geoid] of bldgPolys) poly.setStyle(bldgStyle(geoid)); }
+  map.on('zoomend moveend', syncBuildings);
   function refresh() { recompute(); renderLegend(); restyle(); }
   renderLegend();
 
@@ -381,9 +485,9 @@
       marker = L.circleMarker([lat, lng], { radius: 7, color: css('--ink'), weight: 2, fillColor: css('--surface'), fillOpacity: 1 }).addTo(map);
       map.setView([lat, lng], 17);
       const f = blockAt(lng, lat);
-      $('msg').textContent = res[0].display_name.split(',').slice(0, 2).join(',');
-      if (f) L.popup({ maxWidth: 340 }).setLatLng([lat, lng]).setContent(detailHtml(f.properties)).openOn(map);
-      else $('msg').textContent += ' — not inside a mapped block';
+      const name = res[0].display_name.split(',').slice(0, 2).join(',');
+      $('msg').innerHTML = `${name}${f ? '' : ' — not inside a mapped block'} · <a href="${fccUrl(lat, lng)}" target="_blank" rel="noopener">check this address on the FCC map ↗</a>`;
+      if (f) L.popup({ maxWidth: 340 }).setLatLng([lat, lng]).setContent(detailHtml(f.properties, L.latLng(lat, lng))).openOn(map);
     } catch (err) { $('msg').textContent = 'Search failed (needs internet access to nominatim.openstreetmap.org).'; }
   });
 
@@ -402,8 +506,8 @@
     const rows = all.slice(0, LIMIT);
     $('modalNote').textContent = rows.length < all.length ? `showing ${fmt(LIMIT)} of ${fmt(all.length)} blocks; the CSV has all` : `${fmt(all.length)} blocks`;
     $('dataTable').innerHTML =
-      '<thead><tr><th>Block GEOID</th><th>Matching ISPs</th><th>Matching loc.</th><th>All fiber loc.</th><th>Best speed</th><th>Housing units</th></tr></thead><tbody>' +
-      rows.map(({ p, ev, isps }) => `<tr data-geoid="${p.geoid}"><td>${p.geoid}</td><td>${isps.join(', ')}</td><td>${fmt(ev.nMatch)}</td><td>${fmt(ev.nAll)}</td><td>${speed(ev.best)}</td><td>${fmt(p.hu)}</td></tr>`).join('') + '</tbody>';
+      `<thead><tr><th>Block GEOID</th><th>Matching ISPs</th><th>Matching loc.</th><th>${denomAll ? 'All loc.' : 'All fiber loc.'}</th><th>Coverage</th><th>Best speed</th><th>Housing units</th></tr></thead><tbody>` +
+      rows.map(({ p, ev, isps }) => `<tr data-geoid="${p.geoid}"><td>${p.geoid}</td><td>${isps.join(', ')}</td><td>${fmt(ev.nMatch)}</td><td>${fmt(ev.nTotal)}</td><td>${ev.cov === 'full' ? 'all' : pct(ev.nMatch, ev.nTotal)}</td><td>${speed(ev.best)}</td><td>${fmt(p.hu)}</td></tr>`).join('') + '</tbody>';
     modal.classList.add('open');
   });
   $('dataTable').addEventListener('click', (e) => {
@@ -416,11 +520,11 @@
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') modal.classList.remove('open'); });
   $('btnCsv').addEventListener('click', () => {
     const q = (s) => '"' + String(s).replace(/"/g, '""') + '"';
-    const cols = ['geoid', 'housing_units', 'population', 'fiber_locations_any_isp', 'matching_locations', 'best_down_mbps', 'matching_isps']
+    const cols = ['geoid', 'housing_units', 'population', 'fiber_locations_any_isp', 'total_locations', 'matching_locations', 'coverage', 'best_down_mbps', 'matching_isps']
       .concat(providers.flatMap(p => [`${p.name}_locations`, `${p.name}_max_down_mbps`]));
     const lines = [cols.map(q).join(',')];
     for (const { p, ev, isps } of rowsForExport()) {
-      const cells = [p.geoid, p.hu, p.pop, ev.nAll, ev.nMatch, ev.best, isps.join('; ')]
+      const cells = [p.geoid, p.hu, p.pop, ev.nAll, ev.nTotal, ev.nMatch, ev.cov, ev.best, isps.join('; ')]
         .concat(providers.flatMap((_, i) => { const e = ev.per.get(i); return e ? [e.n, e.down] : [0, 0]; }));
       lines.push(cells.map(q).join(','));
     }

@@ -1,7 +1,7 @@
 PY ?= python3
 PORT ?= 8000
 
-.PHONY: all blocks fetch build serve test clean
+.PHONY: all blocks fetch build buildings serve test clean
 
 all: blocks fetch build   ## download blocks + FCC data, then build the map
 
@@ -13,6 +13,9 @@ fetch:                     ## Sonic's CA fiber availability file (needs FCC_USER
 
 build:                     ## join FCC rows to blocks -> site/data/fiber_blocks.js
 	$(PY) scripts/build_map.py $(BUILD_ARGS)
+
+buildings:                 ## DataSF building footprints -> site/data/buildings/ (needs shapely)
+	$(PY) scripts/fetch_buildings.py
 
 serve:                     ## open http://localhost:$(PORT)
 	@echo "map: http://localhost:$(PORT)/"

@@ -20,6 +20,14 @@ page can then compute exact distinct-location counts for any combination of
 ISP / minimum-speed / residential filters without double counting a home that
 several ISPs serve.
 
+Each block also carries  t: [residential_total, business_only_total]  - the
+number of distinct FCC serviceable locations of ANY technology in the files.
+Satellite ISPs file nearly every location, so dropping a satellite (or cable)
+file for the same state into data/raw/ turns this into the true number of
+locations per block, and the map can then say whether an ISP reaches every
+location in a block or only some.  With only the fiber file present the
+totals equal the fiber-served counts (meta.denominator = "fiber").
+
 The FCC public files identify each serviceable location only by an opaque
 location_id plus its census block (block_geoid) and H3 cell; coordinates for
 individual homes are part of the licensed CostQuest Fabric and are not in the
@@ -105,10 +113,15 @@ def load_locations(paths, county, tech, provider_ids=None):
               res is True when any provider reports the location as residential
               (code R or X); business-only locations (all rows B) have res False.
       brands  {provider_id: Counter(brand_name)}
+      every   {location_id: [geoid, res]} for locations of ANY technology in
+              the files (the per-block denominator)
+      techs   set of technology codes seen
     """
     pids = {str(p).strip() for p in (provider_ids or []) if str(p).strip()}
     locs: dict[str, dict] = {}
     brands: dict[str, Counter] = defaultdict(Counter)
+    every: dict[str, list] = {}
+    techs: set[str] = set()
     seen = kept = 0
     for path in paths:
         print(f"reading {path} ...", file=sys.stderr)
@@ -127,14 +140,21 @@ def load_locations(paths, county, tech, provider_ids=None):
                 geoid = row[i_geoid]
                 if not geoid.startswith(county):
                     continue
-                if tech and row[i_tech].strip() != tech:
+                row_tech = row[i_tech].strip()
+                techs.add(row_tech)
+                br = (row[i_br] or "X").strip().upper()
+                ev = every.get(row[i_loc])
+                if ev is None:
+                    every[row[i_loc]] = [geoid, br != "B"]
+                elif br != "B":
+                    ev[1] = True
+                if tech and row_tech != tech:
                     continue
                 pid = row[i_pid].strip()
                 if pids and pid not in pids:
                     continue
                 kept += 1
                 brands[pid][row[i_brand].strip()] += 1
-                br = (row[i_br] or "X").strip().upper()
                 down, up = _speed(row[i_down]), _speed(row[i_up])
                 loc = locs.get(row[i_loc])
                 if loc is None:
@@ -145,8 +165,9 @@ def load_locations(paths, county, tech, provider_ids=None):
                 if prev is None or down > prev[0]:
                     loc["prov"][pid] = (down, up)
     print(f"  rows read: {seen:,}  rows kept: {kept:,}  distinct locations: {len(locs):,}  "
-          f"providers: {len(brands)}", file=sys.stderr)
-    return locs, brands
+          f"providers: {len(brands)}  locations of any technology: {len(every):,}  techs: {sorted(techs)}",
+          file=sys.stderr)
+    return locs, brands, every, techs
 
 
 def build_providers(locs, brands):
@@ -187,6 +208,14 @@ def combos_by_block(locs, pidx):
     return per_block
 
 
+def totals_by_block(every) -> dict[str, list]:
+    """{geoid: [residential_total, business_only_total]} over locations of any technology."""
+    t: dict[str, list] = defaultdict(lambda: [0, 0])
+    for geoid, res in every.values():
+        t[geoid][0 if res else 1] += 1
+    return t
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--raw", default="data/raw", help="directory of FCC availability CSV/zip files")
@@ -205,12 +234,18 @@ def main() -> None:
                          "FCC download there (see README)")
 
     provider_ids = [p for p in args.provider_id.split(",") if p.strip()]
-    locs, brands = load_locations(paths, args.county, args.tech, provider_ids)
+    locs, brands, every, techs = load_locations(paths, args.county, args.tech, provider_ids)
     if not locs:
         raise SystemExit("no matching locations - check --county / --tech / --provider-id filters")
     providers = build_providers(locs, brands)
     pidx = {p["id"]: i for i, p in enumerate(providers)}
     per_block = combos_by_block(locs, pidx)
+    totals = totals_by_block(every)
+    denominator = "all" if (techs - {args.tech}) else "fiber"
+    if denominator == "fiber":
+        print("  note: only fiber rows found, so per-block totals equal fiber-served counts. Add a "
+              "satellite or cable file for the same state to data/raw/ for true location totals.",
+              file=sys.stderr)
     for p in providers:
         print(f"  {p['locations']:>8,} locations  {p['blocks']:>5,} blocks  {p['name']} [{p['id']}]",
               file=sys.stderr)
@@ -226,7 +261,8 @@ def main() -> None:
             continue  # parks, water, freeway blocks: nothing to show
         c = [[res, [list(t) for t in provs], n] for (res, provs), n in sorted(combos.items(), key=lambda kv: -kv[1])] if combos else []
         features.append({"type": "Feature", "geometry": f["geometry"], "properties": {
-            "geoid": p["geoid"], "hu": p["housing_units"], "pop": p["population"], "c": c}})
+            "geoid": p["geoid"], "hu": p["housing_units"], "pop": p["population"], "c": c,
+            "t": list(totals.get(p["geoid"], [0, 0]))}})
     if unmatched:
         print(f"  warning: {len(unmatched)} block GEOIDs in the FCC data have no census geometry "
               f"(e.g. {sorted(unmatched)[:3]})", file=sys.stderr)
@@ -238,6 +274,9 @@ def main() -> None:
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "county": args.county,
         "technology": args.tech,
+        "techs_seen": sorted(techs),
+        "denominator": denominator,
+        "locations_any_tech": len(every),
         "providers": providers,
         "locations": len(locs),
         "locations_res": sum(1 for l in locs.values() if l["res"]),

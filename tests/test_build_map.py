@@ -36,7 +36,7 @@ class HelperTests(unittest.TestCase):
 
 class LoadTests(unittest.TestCase):
     def setUp(self):
-        self.locs, self.brands = build_map.load_locations([SAMPLE], "06075", "50")
+        self.locs, self.brands, self.every, self.techs = build_map.load_locations([SAMPLE], "06075", "50")
 
     def test_filters_and_dedup(self):
         # 3 homes in block0, 2 in block1, 1 in block2, 1 business in block3; tech 10 and Alameda rows dropped
@@ -46,6 +46,12 @@ class LoadTests(unittest.TestCase):
         self.assertFalse(self.locs["1000030"]["res"])
         self.assertTrue(self.locs["1000020"]["res"])
         self.assertEqual(set(self.brands), {"190425", "130077", "130079", "130982"})
+        self.assertEqual(self.techs, {"10", "50", "61"})   # copper row counts as a location too
+        # denominator: every location of any technology; block1 has 2 fiber + 1 satellite-only
+        totals = build_map.totals_by_block(self.every)
+        self.assertEqual(totals[GEOIDS[1]], [3, 0])
+        self.assertEqual(totals[GEOIDS[0]], [3, 0])
+        self.assertEqual(totals[GEOIDS[3]], [0, 1])
 
     def test_providers_and_combos(self):
         providers = build_map.build_providers(self.locs, self.brands)
@@ -65,7 +71,7 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(combos[GEOIDS[3]][(0, ((pidx["130982"], 10000, 10000),))], 1)
 
     def test_provider_id_filter(self):
-        locs, brands = build_map.load_locations([SAMPLE], "06075", "50", ["190425"])
+        locs, brands, _every, _techs = build_map.load_locations([SAMPLE], "06075", "50", ["190425"])
         self.assertEqual(set(brands), {"190425"})
         self.assertEqual(len(locs), 3)
 
@@ -85,10 +91,13 @@ class EndToEndTests(unittest.TestCase):
             meta = payload["meta"]
             self.assertEqual(meta["as_of"], "December 2025")
             self.assertEqual((meta["locations"], meta["locations_res"], meta["blocks_with_fiber"]), (7, 6, 4))
+            self.assertEqual((meta["denominator"], meta["locations_any_tech"]), ("all", 9))
             self.assertEqual([p["name"] for p in meta["providers"]][:2], ["AT&T", "Sonic"])
             props = {f["properties"]["geoid"]: f["properties"] for f in payload["blocks"]["features"]}
             self.assertEqual(sum(n for _res, _provs, n in props[GEOIDS[0]]["c"]), 3)
+            self.assertEqual(props[GEOIDS[1]]["t"], [3, 0])
             self.assertEqual(props[GEOIDS[4]]["c"], [])                 # housing but no fiber rows
+            self.assertEqual(props[GEOIDS[4]]["t"], [1, 0])          # the copper-only location
             self.assertGreater(props[GEOIDS[4]]["hu"], 0)
             self.assertNotIn("id", payload["blocks"]["features"][0])
 

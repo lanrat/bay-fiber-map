@@ -10,10 +10,12 @@ the FCC's Broadband Data Collection (BDC) availability data behind the
 make blocks      # 1. census block boundaries for SF  (Census TIGERweb, no key)
 make fetch       # 2. FCC availability file            (see "Getting the FCC data")
 make build       # 3. join -> site/data/fiber_blocks.js
-make serve       # 4. open http://localhost:8000/
+make buildings   # 4. building footprints (DataSF) -> site/data/buildings/  (optional)
+make serve       # 5. open http://localhost:8000/
 ```
 
-Only Python 3.9+ and `requests` are needed (`pip install -r requirements.txt`).
+Python 3.9+ and `requests` are needed (`pip install -r requirements.txt`);
+`make buildings` also needs `shapely`.
 The map page itself is plain HTML + [Leaflet](https://leafletjs.com/) (vendored
 in `site/vendor/`); it needs internet access only for the OpenStreetMap basemap tiles
 and the optional address search.
@@ -32,13 +34,31 @@ current filters:
   *number of ISPs* meeting the filters (1, 2, 3+), i.e. how much choice a block has.
 
 Hover or click a block for every ISP present, its serviceable locations and
-maximum advertised speeds, the number of fiber-served locations from any ISP,
-and 2020 census housing units and population. "Table view" lists matching
-blocks; "Download CSV" exports every block with per-ISP columns.
+maximum advertised speeds, whether the selected ISPs reach **all** or only
+**some** of the block's locations, the 2020 census housing units and
+population, and a link that opens the same spot on the FCC map, where the
+FCC shows its per-address dots. "Table view" lists matching blocks;
+"Download CSV" exports every block with per-ISP columns.
+
+**Zoomed in (zoom 15+) the map switches to building footprints** from DataSF,
+each painted with its block's status: solid where the selected ISPs reach every
+location in the block, faded with a dashed outline where they reach only some
+(the FCC data does not say which buildings), gray where none match.
 
 The summary tiles are exact distinct-location counts, not sums per ISP: the
 build stores, per block, how many locations are served by each *combination*
 of ISP and speed, so a home with both Sonic and AT&T is counted once.
+
+### Confirmed vs partial blocks, and the location total
+
+"Reaches all N locations" needs the true number of FCC serviceable locations
+in a block, which the fiber file alone cannot give (it lists only fiber-served
+ones). Satellite ISPs file nearly every location in the country, so dropping a
+**satellite (or cable) availability file for California** into `data/raw/`
+next to the fiber file makes `build_map.py` count every location per block;
+the map then reports `meta.denominator = "all"` and labels blocks accordingly.
+With only the fiber file the totals are fiber-served locations and the page
+says so.
 
 ### Why blocks and not individual homes
 
@@ -107,6 +127,7 @@ then served at `https://<user>.github.io/<repo>/`.
 scripts/fetch_blocks.py   Census TIGERweb -> data/blocks_sf.geojson (committed, 2.9 MB)
 scripts/fetch_fcc.py      FCC BDC download (API or website mode) -> data/raw/
 scripts/build_map.py      join + per-block aggregation -> site/data/fiber_blocks.js
+scripts/fetch_buildings.py DataSF footprints -> site/data/buildings/14_x_y.json (tiled, 14 MB)
 site/index.html           the map (Leaflet, no build step)
 tests/                    unit tests on a small SYNTHETIC fixture (`make test`)
 ```
@@ -119,4 +140,5 @@ tests/                    unit tests on a small SYNTHETIC fixture (`make test`)
   [Data download](https://broadbandmap.fcc.gov/data-download/nationwide-data?version=dec2025),
   [Public Data API spec](https://www.fcc.gov/sites/default/files/bdc-public-data-api-spec.pdf).
 * U.S. Census Bureau, [TIGERweb](https://tigerweb.geo.census.gov/) 2020 census blocks.
+* DataSF, [Building Footprints](https://data.sf.gov/d/ynuv-fyni) (City and County of San Francisco).
 * Basemap tiles © OpenStreetMap contributors. Address search: OSM Nominatim.
