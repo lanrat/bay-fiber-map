@@ -1,29 +1,32 @@
-# San Francisco fiber map
+# Bay Area fiber map
 
-A local, static map of which San Francisco census blocks have fiber-to-the-premises
-internet, from **every ISP that files fiber availability with the FCC** (Sonic,
-AT&T, Astound, Xfinity, ...), filterable by ISP and advertised speed. Built from
-the FCC's Broadband Data Collection (BDC) availability data behind the
-[National Broadband Map](https://broadbandmap.fcc.gov/).
+A static map of where fiber-to-the-premises internet is available across the
+nine Bay Area counties, from **every ISP that files fiber availability with the
+FCC** (AT&T, Sonic, Comcast/Xfinity, Astound, ...), filterable by ISP and
+advertised speed. Built from the FCC's Broadband Data Collection (BDC)
+availability data behind the [National Broadband Map](https://broadbandmap.fcc.gov/).
+
+Three levels of detail, chosen by zoom: **H3 hexagons** (0.7 km², the whole
+region, exact statistics), **2020 census blocks** (zoom 13+), and **building
+footprints** (zoom 15+, San Francisco so far).
 
 ```
-make blocks      # 1. census block boundaries for SF  (Census TIGERweb, no key)
-make fetch       # 2. FCC availability file            (see "Getting the FCC data")
-make build       # 3. join -> site/data/fiber_blocks.js
-make buildings   # 4. building footprints (DataSF) -> site/data/buildings/  (optional)
+make blocks      # 1. census block boundaries, nine counties (Census TIGERweb, no key)
+make fetch       # 2. FCC availability file for California (see "Getting the FCC data")
+make build       # 3. join -> site/data/overview.js + site/data/blocks/ tiles
+make buildings   # 4. building footprints (DataSF, San Francisco) -> site/data/buildings/
 make serve       # 5. open http://localhost:8000/
 ```
 
-Python 3.9+ and `requests` are needed (`pip install -r requirements.txt`);
-`make buildings` also needs `shapely`.
+Python 3.9+ with `requests`, `h3` and `shapely` (`pip install -r requirements.txt`).
 The map page itself is plain HTML + [Leaflet](https://leafletjs.com/) (vendored
 in `site/vendor/`); it needs internet access only for the OpenStreetMap basemap tiles
 and the optional address search.
 
 ## What the map shows
 
-Each 2020 census block is colored by the best match among its locations for the
-current filters:
+Each hexagon, census block or building is colored by the best match among its
+locations for the current filters:
 
 * **ISPs** - tick any combination of providers (counts show that ISP's
   locations at the selected minimum speed).
@@ -33,21 +36,25 @@ current filters:
 * **Color blocks by** *fastest speed* (10 Gbps+, 5-10, 1-5, under 1) or
   *number of ISPs* meeting the filters (1, 2, 3+), i.e. how much choice a block has.
 
-Hover or click a block for every ISP present, its serviceable locations and
+Hover or click an area for every ISP present, its serviceable locations and
 maximum advertised speeds, whether the selected ISPs reach **all** or only
-**some** of the block's locations, the 2020 census housing units and
-population, and a link that opens the same spot on the FCC map, where the
-FCC shows its per-address dots. "Table view" lists matching blocks;
-"Download CSV" exports every block with per-ISP columns.
+**some** of the area's locations, census housing units and population (blocks),
+and a link that opens the same spot on the FCC map, where the FCC shows its
+per-address dots. "Table view" lists matching hexagons; "Download CSV" exports
+every hexagon with per-ISP columns.
 
 **Zoomed in (zoom 15+) the map switches to building footprints** from DataSF,
 each painted with its block's status: solid where the selected ISPs reach every
 location in the block, faded with a dashed outline where they reach only some
 (the FCC data does not say which buildings), gray where none match.
 
-The summary tiles are exact distinct-location counts, not sums per ISP: the
-build stores, per block, how many locations are served by each *combination*
-of ISP and speed, so a home with both Sonic and AT&T is counted once.
+The summary tiles are exact distinct-location counts for the whole region, not
+sums per ISP: the build stores, per hexagon and per block, how many locations
+are served by each *combination* of ISP and speed, so a home with both Sonic
+and AT&T is counted once. The hexagons come straight from the `h3_res8_id`
+column of the FCC data, so the overview needs no geometry download and is
+small enough (under 2 MB) to load whole; block outlines stream in zoom-12
+tiles as you pan.
 
 ### Confirmed vs partial blocks, and the location total
 
@@ -83,7 +90,7 @@ Other caveats:
 ## Getting the FCC data
 
 `scripts/build_map.py` reads every `.csv`/`.zip` in `data/raw/` that follows the
-FCC availability schema (`frn, provider_id, brand_name, location_id, technology,
+FCC availability schema (one California file covers all nine counties) (`frn, provider_id, brand_name, location_id, technology,
 max_advertised_download_speed, ...`). Any of these works:
 
 1. **State-wide fiber file** (recommended; every ISP):
@@ -104,18 +111,20 @@ max_advertised_download_speed, ...`). Any of these works:
 
 Then `python scripts/build_map.py`. Useful flags: `--provider-id` to keep only
 some ISPs (e.g. `190425` = Sonic Telecom, LLC), `--tech` (`50` = fiber; `40` =
-cable if you download that file too), `--county` (any 5-digit state+county FIPS,
-e.g. `06001` for Alameda; run `scripts/fetch_blocks.py --county 001` first),
-`--as-of` to label the vintage.
+cable if you download that file too), `--county` (comma-separated 5-digit
+state+county FIPS codes; run `scripts/fetch_blocks.py --county ...` first for
+counties outside the Bay Area), `--region` to relabel the page, `--as-of` to
+label the vintage.
 
 ## Deploying to GitHub Pages
 
 `.github/workflows/pages.yml` runs the tests and publishes `site/` to GitHub
 Pages on every push to the default branch (other branches only build and test).
-The built `site/data/fiber_blocks.js` is committed, so the deploy needs nothing
-from the FCC; to refresh the data either rebuild locally and commit the new
-file, or set the repository variable `FCC_DATA_URL` to a URL of the FCC
-California fiber zip and the workflow rebuilds it on each deploy.
+The built `site/data/` (about 60 MB: hexagon overview, block tiles, SF
+buildings) is committed, so the deploy needs nothing from the FCC; to refresh
+the data either rebuild locally and commit, or set the repository variable
+`FCC_DATA_URL` to a URL of the FCC California fiber zip and the workflow
+re-fetches the census blocks and rebuilds on each deploy.
 
 One-time setup: in the repository *Settings -> Pages*, set **Source** to
 **GitHub Actions** (the workflow also tries to enable this itself). The map is
@@ -124,15 +133,15 @@ then served at `https://<user>.github.io/<repo>/`.
 ## Layout
 
 ```
-scripts/fetch_blocks.py   Census TIGERweb -> data/blocks_sf.geojson (committed, 2.9 MB)
+scripts/fetch_blocks.py   Census TIGERweb -> data/blocks/06<county>.geojson (SF committed for tests)
 scripts/fetch_fcc.py      FCC BDC download (API or website mode) -> data/raw/
-scripts/build_map.py      join + per-block aggregation -> site/data/fiber_blocks.js
+scripts/build_map.py      join + aggregation -> site/data/overview.js (hexagons) + site/data/blocks/12_x_y.json
 scripts/fetch_buildings.py DataSF footprints -> site/data/buildings/14_x_y.json (tiled, 14 MB)
 site/index.html           the map (Leaflet, no build step)
 tests/                    unit tests on a small SYNTHETIC fixture (`make test`)
 ```
 
-`data/raw/` is git-ignored; `site/data/fiber_blocks.js` is committed (see above).
+`data/raw/` and `data/blocks/` (except SF) are git-ignored; `site/data/` is committed (see above).
 
 ## Sources
 

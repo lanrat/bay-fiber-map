@@ -1,32 +1,43 @@
 #!/usr/bin/env python3
-"""Join FCC BDC fiber availability records to census blocks and emit map data.
+"""Join FCC BDC fiber availability records to census blocks and H3 hexagons
+and emit the map's data files.
 
 Inputs
-  data/raw/*.csv | *.zip   FCC BDC "availability" CSVs (as downloaded from
-                            broadbandmap.fcc.gov, optionally still zipped).
-  data/blocks_sf.geojson   Census blocks from scripts/fetch_blocks.py.
+  data/raw/*.csv | *.zip      FCC BDC "availability" CSVs (as downloaded from
+                               broadbandmap.fcc.gov, optionally still zipped).
+  data/blocks/06<county>.geojson  Census blocks from scripts/fetch_blocks.py.
 
-Output
-  site/data/fiber_blocks.js   window.FIBER_DATA = {meta, blocks}
+Outputs
+  site/data/overview.js        window.FIBER_DATA = {meta, hexes, hexes7}
+                               One feature per H3 res-8 hexagon (~0.74 km2)
+                               that has any serviceable location, plus the same
+                               aggregated to res-7 parents (~5.2 km2) for the
+                               zoomed-out view.  Small enough to load whole, so
+                               the page computes exact region-wide statistics.
+  site/data/blocks/12_x_y.json Census blocks, one file per zoom-12 web-mercator
+                               tile (a block appears in every tile its bounding
+                               box touches), loaded by the page when zoomed in.
+  site/data/blocks/index.json  The list of tiles.
 
-Every fiber provider in the files is kept.  For each census block the output
-stores, instead of plain totals, a small list of *location combinations*:
+Every fiber provider in the files is kept.  For each hexagon and block the
+output stores, instead of plain totals, a small list of *location
+combinations*:
 
     c: [[res, [[provider_idx, down_mbps, up_mbps], ...], count], ...]
 
-i.e. "`count` locations in this block (residential=1 / business-only=0) are
-served by exactly this set of providers at these advertised speeds".  The map
-page can then compute exact distinct-location counts for any combination of
-ISP / minimum-speed / residential filters without double counting a home that
+i.e. "`count` locations here (residential=1 / business-only=0) are served by
+exactly this set of providers at these advertised speeds".  The map page can
+then compute exact distinct-location counts for any combination of ISP /
+minimum-speed / residential filters without double counting a home that
 several ISPs serve.
 
-Each block also carries  t: [residential_total, business_only_total]  - the
+Each feature also carries  t: [residential_total, business_only_total]  - the
 number of distinct FCC serviceable locations of ANY technology in the files.
 Satellite ISPs file nearly every location, so dropping a satellite (or cable)
 file for the same state into data/raw/ turns this into the true number of
-locations per block, and the map can then say whether an ISP reaches every
-location in a block or only some.  With only the fiber file present the
-totals equal the fiber-served counts (meta.denominator = "fiber").
+locations, and the map can then say whether an ISP reaches every location in
+a block or only some.  With only the fiber file present the totals equal the
+fiber-served counts (meta.denominator = "fiber").
 
 The FCC public files identify each serviceable location only by an opaque
 location_id plus its census block (block_geoid) and H3 cell; coordinates for
@@ -44,6 +55,7 @@ import argparse
 import csv
 import io
 import json
+import math
 import re
 import sys
 import zipfile
@@ -51,8 +63,17 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+import h3
+from shapely.geometry import shape, mapping
+
 FIBER_TECH = "50"          # BDC technology code for Fiber to the Premises
-SF_COUNTY_GEOID = "06075"  # state 06 (CA) + county 075 (San Francisco)
+BAY_AREA = ["06001", "06013", "06041", "06055", "06075", "06081", "06085", "06095", "06097"]
+COUNTY_NAMES = {"06001": "Alameda", "06013": "Contra Costa", "06041": "Marin", "06055": "Napa",
+                "06075": "San Francisco", "06081": "San Mateo", "06085": "Santa Clara",
+                "06095": "Solano", "06097": "Sonoma"}
+BLOCK_TILE_ZOOM = 12
+SIMPLIFY_DEG = 0.00002     # ~2 m: TIGER block outlines carry far more vertices than the map needs
+COORD_DECIMALS = 5         # ~1.1 m
 
 # Friendlier names than the brand_name column where it is a legal entity name.
 DISPLAY_NAMES = {
@@ -105,18 +126,29 @@ def _speed(v: str) -> int:
         return 0
 
 
-def load_locations(paths, county, tech, provider_ids=None):
+def tile_xy(lng: float, lat: float, z: int) -> tuple[int, int]:
+    n = 2 ** z
+    x = int((lng + 180.0) / 360.0 * n)
+    lat_r = math.radians(max(-85.05, min(85.05, lat)))
+    y = int((1.0 - math.log(math.tan(lat_r) + 1 / math.cos(lat_r)) / math.pi) / 2.0 * n)
+    return x, y
+
+
+def load_locations(paths, counties, tech, provider_ids=None):
     """Scan the FCC files once.
 
+    counties  tuple of 5-digit state+county prefixes to keep
     Returns
-      locs    {location_id: {"geoid", "res", "prov": {provider_id: (down, up)}}}
-              res is True when any provider reports the location as residential
-              (code R or X); business-only locations (all rows B) have res False.
+      locs    {location_id: {"geoid", "h3", "res", "prov": {provider_id: (down, up)}}}
+              for locations with a matching (fiber) row.  res is True when any
+              provider reports the location as residential (code R or X);
+              business-only locations (all rows B) have res False.
       brands  {provider_id: Counter(brand_name)}
-      every   {location_id: [geoid, res]} for locations of ANY technology in
-              the files (the per-block denominator)
+      every   {location_id: [geoid, res, h3]} for locations of ANY technology
+              in the files (the per-block / per-hex denominator)
       techs   set of technology codes seen
     """
+    counties = tuple(counties)
     pids = {str(p).strip() for p in (provider_ids or []) if str(p).strip()}
     locs: dict[str, dict] = {}
     brands: dict[str, Counter] = defaultdict(Counter)
@@ -131,6 +163,7 @@ def load_locations(paths, county, tech, provider_ids=None):
                 i_geoid, i_loc, i_tech = col["block_geoid"], col["location_id"], col["technology"]
                 i_down, i_up = col["max_advertised_download_speed"], col["max_advertised_upload_speed"]
                 i_pid, i_brand, i_br = col["provider_id"], col["brand_name"], col["business_residential_code"]
+                i_h3 = col["h3_res8_id"]
             except KeyError as exc:
                 raise SystemExit(f"{path}: missing expected column {exc}; is this an FCC availability file?")
             for row in rows:
@@ -138,14 +171,14 @@ def load_locations(paths, county, tech, provider_ids=None):
                 if seen % 2_000_000 == 0:
                     print(f"  ... {seen:,} rows", file=sys.stderr)
                 geoid = row[i_geoid]
-                if not geoid.startswith(county):
+                if not geoid.startswith(counties):
                     continue
                 row_tech = row[i_tech].strip()
                 techs.add(row_tech)
                 br = (row[i_br] or "X").strip().upper()
                 ev = every.get(row[i_loc])
                 if ev is None:
-                    every[row[i_loc]] = [geoid, br != "B"]
+                    every[row[i_loc]] = [geoid, br != "B", row[i_h3].strip()]
                 elif br != "B":
                     ev[1] = True
                 if tech and row_tech != tech:
@@ -158,7 +191,7 @@ def load_locations(paths, county, tech, provider_ids=None):
                 down, up = _speed(row[i_down]), _speed(row[i_up])
                 loc = locs.get(row[i_loc])
                 if loc is None:
-                    loc = locs[row[i_loc]] = {"geoid": geoid, "res": False, "prov": {}}
+                    loc = locs[row[i_loc]] = {"geoid": geoid, "h3": row[i_h3].strip(), "res": False, "prov": {}}
                 if br != "B":
                     loc["res"] = True
                 prev = loc["prov"].get(pid)
@@ -198,30 +231,69 @@ def build_providers(locs, brands):
     return providers
 
 
-def combos_by_block(locs, pidx):
-    """{geoid: Counter((res, ((pidx, down, up), ...)))}"""
-    per_block: dict[str, Counter] = defaultdict(Counter)
+def combos_by_key(locs, pidx, key):
+    """{feature key: Counter((res, ((pidx, down, up), ...)))}; key is 'geoid' or 'h3'."""
+    per: dict[str, Counter] = defaultdict(Counter)
     for loc in locs.values():
-        key = (1 if loc["res"] else 0,
-               tuple(sorted((pidx[p], d, u) for p, (d, u) in loc["prov"].items())))
-        per_block[loc["geoid"]][key] += 1
-    return per_block
+        k = (1 if loc["res"] else 0,
+             tuple(sorted((pidx[p], d, u) for p, (d, u) in loc["prov"].items())))
+        per[loc[key]][k] += 1
+    return per
 
 
-def totals_by_block(every) -> dict[str, list]:
-    """{geoid: [residential_total, business_only_total]} over locations of any technology."""
+def totals_by_key(every, idx) -> dict[str, list]:
+    """{key: [residential_total, business_only_total]} over locations of any technology."""
     t: dict[str, list] = defaultdict(lambda: [0, 0])
-    for geoid, res in every.values():
-        t[geoid][0 if res else 1] += 1
+    for ev in every.values():
+        t[ev[idx]][0 if ev[1] else 1] += 1
     return t
+
+
+def combos_json(counter: Counter | None) -> list:
+    if not counter:
+        return []
+    return [[res, [list(t) for t in provs], n] for (res, provs), n in sorted(counter.items(), key=lambda kv: -kv[1])]
+
+
+def bbox(geometry: dict) -> tuple[float, float, float, float]:
+    xs: list[float] = []
+    ys: list[float] = []
+    polys = geometry["coordinates"] if geometry["type"] == "MultiPolygon" else [geometry["coordinates"]]
+    for poly in polys:
+        for x, y in poly[0]:
+            xs.append(x)
+            ys.append(y)
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _round_coords(obj):
+    if isinstance(obj, (list, tuple)):
+        if obj and isinstance(obj[0], float):
+            return [round(v, COORD_DECIMALS) for v in obj]
+        return [_round_coords(v) for v in obj]
+    return obj
+
+
+def slim_geometry(geometry: dict) -> dict:
+    """Simplify a block outline for the web map (topology preserved per block)."""
+    try:
+        g = shape(geometry).simplify(SIMPLIFY_DEG, preserve_topology=True)
+        if g.is_empty:
+            raise ValueError
+        geometry = mapping(g)
+    except Exception:  # noqa: BLE001 - keep the original outline on any failure
+        pass
+    return {"type": geometry["type"], "coordinates": _round_coords(geometry["coordinates"])}
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--raw", default="data/raw", help="directory of FCC availability CSV/zip files")
-    ap.add_argument("--blocks", default="data/blocks_sf.geojson")
-    ap.add_argument("--out", default="site/data/fiber_blocks.js")
-    ap.add_argument("--county", default=SF_COUNTY_GEOID, help="5-digit state+county FIPS prefix")
+    ap.add_argument("--blocks-dir", default="data/blocks", help="directory of 06<county>.geojson block files")
+    ap.add_argument("--out", default="site/data", help="output directory")
+    ap.add_argument("--county", default=",".join(BAY_AREA),
+                    help="comma-separated 5-digit state+county FIPS prefixes (default: the nine Bay Area counties)")
+    ap.add_argument("--region", default="Bay Area", help="label for the region in the page")
     ap.add_argument("--tech", default=FIBER_TECH, help="BDC technology code to keep; '' for any")
     ap.add_argument("--provider-id", default="", help="comma-separated provider_ids to keep (default: all)")
     ap.add_argument("--as-of", default="", help="override the data vintage label")
@@ -232,47 +304,112 @@ def main() -> None:
     if not paths:
         raise SystemExit(f"no .csv/.zip files found in {raw_dir}/ - run scripts/fetch_fcc.py or drop the "
                          "FCC download there (see README)")
+    counties = [c.strip() for c in args.county.split(",") if c.strip()]
+    block_files = [Path(args.blocks_dir) / f"{c}.geojson" for c in counties]
+    missing = [str(p) for p in block_files if not p.exists()]
+    if missing:
+        raise SystemExit(f"missing block files (run scripts/fetch_blocks.py): {missing}")
 
     provider_ids = [p for p in args.provider_id.split(",") if p.strip()]
-    locs, brands, every, techs = load_locations(paths, args.county, args.tech, provider_ids)
+    locs, brands, every, techs = load_locations(paths, counties, args.tech, provider_ids)
     if not locs:
         raise SystemExit("no matching locations - check --county / --tech / --provider-id filters")
     providers = build_providers(locs, brands)
     pidx = {p["id"]: i for i, p in enumerate(providers)}
-    per_block = combos_by_block(locs, pidx)
-    totals = totals_by_block(every)
+    by_block = combos_by_key(locs, pidx, "geoid")
+    by_hex = combos_by_key(locs, pidx, "h3")
+    tot_block = totals_by_key(every, 0)
+    tot_hex = totals_by_key(every, 2)
     denominator = "all" if (techs - {args.tech}) else "fiber"
     if denominator == "fiber":
         print("  note: only fiber rows found, so per-block totals equal fiber-served counts. Add a "
               "satellite or cable file for the same state to data/raw/ for true location totals.",
               file=sys.stderr)
-    for p in providers:
-        print(f"  {p['locations']:>8,} locations  {p['blocks']:>5,} blocks  {p['name']} [{p['id']}]",
-              file=sys.stderr)
+    for p in providers[:15]:
+        print(f"  {p['locations']:>9,} locations  {p['blocks']:>6,} blocks  {p['name']} [{p['id']}]", file=sys.stderr)
+    if len(providers) > 15:
+        print(f"  ... and {len(providers) - 15} more providers", file=sys.stderr)
 
-    fc = json.loads(Path(args.blocks).read_text())
-    features = []
-    unmatched = set(per_block)
-    for f in fc["features"]:
-        p = f["properties"]
-        combos = per_block.get(p["geoid"])
-        unmatched.discard(p["geoid"])
-        if combos is None and p["housing_units"] == 0:
-            continue  # parks, water, freeway blocks: nothing to show
-        c = [[res, [list(t) for t in provs], n] for (res, provs), n in sorted(combos.items(), key=lambda kv: -kv[1])] if combos else []
-        features.append({"type": "Feature", "geometry": f["geometry"], "properties": {
-            "geoid": p["geoid"], "hu": p["housing_units"], "pop": p["population"], "c": c,
-            "t": list(totals.get(p["geoid"], [0, 0]))}})
+    # ---- census blocks, tiled ------------------------------------------------
+    out = Path(args.out)
+    blocks_out = out / "blocks"
+    blocks_out.mkdir(parents=True, exist_ok=True)
+    for old in blocks_out.glob("*_*_*.json"):
+        old.unlink()
+    tiles: dict[tuple[int, int], list] = defaultdict(list)
+    unmatched = set(by_block)
+    n_blocks = hu_total = 0
+    west = south = math.inf
+    east = north = -math.inf
+    for bf in block_files:
+        fc = json.loads(bf.read_text())
+        for f in fc["features"]:
+            p = f["properties"]
+            combos = by_block.get(p["geoid"])
+            unmatched.discard(p["geoid"])
+            if combos is None and p["housing_units"] == 0:
+                continue  # parks, water, freeway blocks: nothing to show
+            x0, y0, x1, y1 = bbox(f["geometry"])
+            west, east, south, north = min(west, x0), max(east, x1), min(south, y0), max(north, y1)
+            feature = {"type": "Feature", "geometry": slim_geometry(f["geometry"]), "properties": {
+                "geoid": p["geoid"], "hu": p["housing_units"], "pop": p["population"],
+                "c": combos_json(combos), "t": list(tot_block.get(p["geoid"], [0, 0]))}}
+            tx0, ty0 = tile_xy(x0, y1, BLOCK_TILE_ZOOM)   # north-west corner
+            tx1, ty1 = tile_xy(x1, y0, BLOCK_TILE_ZOOM)   # south-east corner
+            for tx in range(tx0, tx1 + 1):
+                for ty in range(ty0, ty1 + 1):
+                    tiles[(tx, ty)].append(feature)
+            n_blocks += 1
+            hu_total += p["housing_units"]
     if unmatched:
         print(f"  warning: {len(unmatched)} block GEOIDs in the FCC data have no census geometry "
               f"(e.g. {sorted(unmatched)[:3]})", file=sys.stderr)
+    tile_bytes = 0
+    for (x, y), feats in tiles.items():
+        tp = blocks_out / f"{BLOCK_TILE_ZOOM}_{x}_{y}.json"
+        tp.write_text(json.dumps({"type": "FeatureCollection", "features": feats}, separators=(",", ":")))
+        tile_bytes += tp.stat().st_size
+    (blocks_out / "index.json").write_text(json.dumps({
+        "z": BLOCK_TILE_ZOOM, "tiles": sorted(f"{x}_{y}" for x, y in tiles), "blocks": n_blocks}, separators=(",", ":")))
+    print(f"  blocks: {n_blocks:,} in {len(tiles)} zoom-{BLOCK_TILE_ZOOM} tiles ({tile_bytes/1e6:.1f} MB; "
+          f"largest {max(tp.stat().st_size for tp in blocks_out.glob(f'{BLOCK_TILE_ZOOM}_*.json'))/1e6:.1f} MB)", file=sys.stderr)
+
+    # ---- H3 hexagons (overview + exact region-wide stats) --------------------
+    def hex_features(combos_by_cell, totals_by_cell):
+        feats = []
+        for cell in sorted(set(combos_by_cell) | set(totals_by_cell)):
+            ring = [[round(lng, 6), round(lat, 6)] for lat, lng in h3.cell_to_boundary(cell)]
+            ring.append(ring[0])
+            feats.append({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [ring]},
+                          "properties": {"id": cell, "c": combos_json(combos_by_cell.get(cell)),
+                                         "t": list(totals_by_cell.get(cell, [0, 0]))}})
+        return feats
+
+    bad = [c for c in set(by_hex) | set(tot_hex) if not h3.is_valid_cell(c)]
+    for c in bad:
+        by_hex.pop(c, None)
+        tot_hex.pop(c, None)
+    if bad:
+        print(f"  warning: {len(bad)} invalid h3_res8_id values dropped", file=sys.stderr)
+    hex_feats = hex_features(by_hex, tot_hex)
+    # coarser res-7 parents for the zoomed-out view (same combination model, so it can be styled the same way)
+    by_hex7: dict[str, Counter] = defaultdict(Counter)
+    for cell, counter in by_hex.items():
+        by_hex7[h3.cell_to_parent(cell, 7)].update(counter)
+    tot_hex7: dict[str, list] = defaultdict(lambda: [0, 0])
+    for cell, (r, bz) in tot_hex.items():
+        parent = tot_hex7[h3.cell_to_parent(cell, 7)]
+        parent[0] += r
+        parent[1] += bz
+    hex7_feats = hex_features(by_hex7, tot_hex7)
 
     as_of = args.as_of or next((v for v in (as_of_from_name(p.name) for p in paths) if v), "unknown")
     meta = {
         "as_of": as_of,
         "source_files": [p.name for p in paths],
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "county": args.county,
+        "region": args.region,
+        "counties": {c: COUNTY_NAMES.get(c, c) for c in counties},
         "technology": args.tech,
         "techs_seen": sorted(techs),
         "denominator": denominator,
@@ -280,16 +417,23 @@ def main() -> None:
         "providers": providers,
         "locations": len(locs),
         "locations_res": sum(1 for l in locs.values() if l["res"]),
-        "blocks_with_fiber": len(per_block),
-        "blocks_total": len(features),
-        "housing_units_total": sum(f["properties"]["hu"] for f in features),
+        "blocks_with_fiber": len(by_block),
+        "blocks_total": n_blocks,
+        "housing_units_total": hu_total,
+        "hexes": len(hex_feats),
+        "hexes7": len(hex7_feats),
+        "bounds": [[round(south, 4), round(west, 4)], [round(north, 4), round(east, 4)]],
+        "block_tiles": {"z": BLOCK_TILE_ZOOM, "count": len(tiles)},
     }
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"meta": meta, "blocks": {"type": "FeatureCollection", "features": features}}
-    out.write_text("window.FIBER_DATA = " + json.dumps(payload, separators=(",", ":")) + ";\n")
-    print(json.dumps({k: v for k, v in meta.items() if k != "providers"}, indent=2))
-    print(f"wrote {out} ({out.stat().st_size/1e6:.1f} MB)")
+    payload = {"meta": meta, "hexes": {"type": "FeatureCollection", "features": hex_feats},
+               "hexes7": {"type": "FeatureCollection", "features": hex7_feats}}
+    ov = out / "overview.js"
+    ov.write_text("window.FIBER_DATA = " + json.dumps(payload, separators=(",", ":")) + ";\n")
+    legacy = out / "fiber_blocks.js"
+    if legacy.exists():
+        legacy.unlink()
+    print(json.dumps({k: v for k, v in meta.items() if k not in ("providers", "counties")}, indent=2))
+    print(f"wrote {ov} ({ov.stat().st_size/1e6:.1f} MB) and {len(tiles)} block tiles in {blocks_out}/")
 
 
 if __name__ == "__main__":

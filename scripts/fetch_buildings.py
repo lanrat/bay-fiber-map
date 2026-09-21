@@ -3,7 +3,7 @@
 
 Source: DataSF "Building Footprints" (dataset ynuv-fyni, public, no key).
 Each building's representative point is matched to a 2020 census block from
-data/blocks_sf.geojson, so the map can paint every building with its block's
+data/blocks/06075.geojson, so the map can paint every building with its block's
 fiber status when zoomed in.
 
 Output: site/data/buildings/14_<x>_<y>.json  one file per zoom-14 web-mercator
@@ -95,7 +95,7 @@ def encode_ring(coords) -> tuple[int, int, list[int]]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--blocks", default="data/blocks_sf.geojson")
+    ap.add_argument("--blocks", default="data/blocks/06075.geojson", help="block file(s), comma-separated")
     ap.add_argument("--cache", default="data/raw/sf_building_footprints.geojson", help="raw download cache")
     ap.add_argument("--out", default="site/data/buildings")
     args = ap.parse_args()
@@ -104,7 +104,7 @@ def main() -> None:
     session.headers["User-Agent"] = "fcc-fiber-map/1.0 (building footprints)"
     feats = fetch_all(session, Path(args.cache))
 
-    blocks = json.loads(Path(args.blocks).read_text())["features"]
+    blocks = [f for path in args.blocks.split(",") for f in json.loads(Path(path).read_text())["features"]]
     geoms = [shape(f["geometry"]) for f in blocks]
     geoids = [f["properties"]["geoid"] for f in blocks]
     tree = STRtree(geoms)

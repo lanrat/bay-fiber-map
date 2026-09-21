@@ -29,10 +29,10 @@ jobs:
       - name: Run tests
         run: python -m unittest discover -s tests -v
 
-      # Optional: rebuild site/data/fiber_blocks.js from a fresh FCC file instead of
-      # the committed one.  Set the repository variable FCC_DATA_URL (Settings ->
-      # Secrets and variables -> Actions -> Variables) to a URL of the FCC
-      # "California / Fiber to the Premises" availability zip.
+      # Optional: rebuild site/data/ from a fresh FCC file instead of the committed
+      # data.  Set the repository variable FCC_DATA_URL (Settings -> Secrets and
+      # variables -> Actions -> Variables) to a URL of the FCC "California / Fiber
+      # to the Premises" availability zip.  Census blocks are fetched from TIGERweb.
       - name: Rebuild map data from FCC_DATA_URL
         if: vars.FCC_DATA_URL != ''
         env:
@@ -40,10 +40,11 @@ jobs:
         run: |
           mkdir -p data/raw
           curl -sSfL "$FCC_DATA_URL" -o "data/raw/$(basename "$FCC_DATA_URL")"
+          python scripts/fetch_blocks.py
           python scripts/build_map.py
 
       - name: Check the site has data
-        run: test -s site/data/fiber_blocks.js
+        run: test -s site/data/overview.js && test -s site/data/blocks/index.json
 
       - uses: actions/upload-pages-artifact@v3
         with:

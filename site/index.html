@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SF Fiber Map</title>
+<title>Bay Area Fiber Map</title>
 <link rel="stylesheet" href="vendor/leaflet.css">
 <style>
   :root {
@@ -96,14 +96,12 @@
   .foot { color: var(--muted); font-size: 11px; margin: 10px 0 0; }
   .foot a { color: inherit; }
   .msg { color: var(--ink-2); font-size: 12px; min-height: 1em; margin-top: 4px; }
+  .msg a { color: var(--accent); }
   .banner { margin: 10px 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--hair); background: var(--plane); font-size: 13px; }
   .banner code { font-size: 12px; }
   .note { color: var(--muted); font-size: 11px; margin: 4px 0 0; }
-  .tip .cov { margin-top: 6px; font-weight: 600; }
-  .tip .cov.partial { color: var(--ink-2); }
-  .tip a.fcc { display: inline-block; margin-top: 8px; color: var(--accent); font-weight: 600; text-decoration: none; }
-  .tip a.fcc:hover { text-decoration: underline; }
-  .msg a { color: var(--accent); }
+  .level { position: absolute; right: 12px; bottom: 24px; z-index: 1000; background: var(--surface); color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 11px; box-shadow: var(--shadow); }
 
   /* tooltip / popup */
   .leaflet-tooltip.blk, .leaflet-popup-content-wrapper {
@@ -122,6 +120,10 @@
   .tip td.n { text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
   .tip tr.off td { opacity: .5; }
   .tip .sum { margin-top: 5px; color: var(--ink-2); font-size: 12px; }
+  .tip .cov { margin-top: 6px; font-weight: 600; }
+  .tip .cov.partial { color: var(--ink-2); }
+  .tip a.fcc { display: inline-block; margin-top: 8px; color: var(--accent); font-weight: 600; text-decoration: none; }
+  .tip a.fcc:hover { text-decoration: underline; }
   .leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
   .leaflet-control-attribution { background: var(--surface) !important; color: var(--ink-2) !important; }
   .leaflet-control-attribution a { color: var(--ink-2) !important; }
@@ -144,14 +146,16 @@
   @media (max-width: 560px) {
     .panel { top: auto; bottom: 0; left: 0; right: 0; width: auto; max-width: none; max-height: 52vh; border-radius: 12px 12px 0 0; }
     .tile .v { font-size: 18px; }
+    .level { bottom: auto; top: 12px; right: 60px; }
   }
 </style>
 </head>
 <body>
-<div id="map" role="application" aria-label="Map of San Francisco census blocks colored by fiber internet availability"></div>
+<div id="map" role="application" aria-label="Map of Bay Area fiber internet availability by hexagon, census block and building"></div>
+<div class="level" id="level" aria-live="polite"></div>
 
 <section class="panel" aria-label="Filters, legend and summary">
-  <h1>Fiber internet in San Francisco</h1>
+  <h1 id="title">Fiber internet in the Bay Area</h1>
   <p class="sub" id="sub">Loading…</p>
   <div id="nodata" class="banner" hidden>
     No map data yet. Put the FCC availability file in <code>data/raw/</code> (or run
@@ -170,18 +174,18 @@
     </select></div>
   <div class="ctl"><input type="checkbox" id="biz"><label for="biz">Include business-only locations</label></div>
 
-  <h2>Color blocks by</h2>
+  <h2>Color by</h2>
   <div class="seg" role="radiogroup">
     <input type="radio" name="mode" id="modeSpeed" value="speed" checked><label for="modeSpeed">Fastest speed</label>
     <input type="radio" name="mode" id="modeCount" value="count"><label for="modeCount">Number of ISPs</label>
   </div>
   <ul class="list" id="legend" style="margin-top:6px"></ul>
-  <div class="ctl"><input type="checkbox" id="showNone" checked><label for="showNone">Show blocks with no match</label></div>
+  <div class="ctl"><input type="checkbox" id="showNone" checked><label for="showNone">Show areas with no match</label></div>
   <div class="ctl"><input type="checkbox" id="showBldg" checked><label for="showBldg">Show buildings when zoomed in</label></div>
   <p class="note" id="bldgNote"></p>
 
   <form class="row" id="searchForm" autocomplete="off">
-    <input type="search" id="q" placeholder="Jump to an address in SF…" aria-label="Address search">
+    <input type="search" id="q" placeholder="Jump to an address…" aria-label="Address search">
     <button type="submit">Go</button>
   </form>
   <div class="msg" id="msg" aria-live="polite"></div>
@@ -195,13 +199,13 @@
 
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
   <div class="card">
-    <div class="hd"><h3 id="modalTitle">Census blocks matching the current filters</h3><span class="msg" id="modalNote"></span><button type="button" id="btnClose">Close</button></div>
+    <div class="hd"><h3 id="modalTitle">Hexagons matching the current filters</h3><span class="msg" id="modalNote"></span><button type="button" id="btnClose">Close</button></div>
     <div class="bd"><table class="data" id="dataTable"></table></div>
   </div>
 </div>
 
 <script src="vendor/leaflet.js"></script>
-<script src="data/fiber_blocks.js"></script>
+<script src="data/overview.js"></script>
 <script>
 (function () {
   const SPEED_TIERS = [   // ordered fastest first; key -> CSS var
@@ -215,6 +219,7 @@
     { key: 'k2', min: 2, label: '2 ISPs' },
     { key: 'k1', min: 1, label: '1 ISP' },
   ];
+  const HEX8_ZOOM = 10, BLOCK_ZOOM = 13, BLDG_ZOOM = 15;   // res-7 hexagons below 10, res-8 from 10, blocks from 13
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const color = (key) => css('--' + key);
   const fmt = (n) => (n == null ? '–' : Number(n).toLocaleString());
@@ -224,7 +229,7 @@
     (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
   const $ = (id) => document.getElementById(id);
 
-  const map = L.map('map', { preferCanvas: true, zoomControl: false }).setView([37.7599, -122.4416], 12.5);
+  const map = L.map('map', { preferCanvas: true, zoomControl: false }).setView([37.75, -122.3], 9);
   L.control.zoom({ position: 'topright' }).addTo(map);
   window.fiberMap = map;   // handy for the console and for tests
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19,
@@ -233,26 +238,31 @@
 
   const data = window.FIBER_DATA;
   if (!data) {
-    $('sub').textContent = 'No data file found (site/data/fiber_blocks.js).';
+    $('sub').textContent = 'No data file found (site/data/overview.js).';
     $('nodata').hidden = false;
     setBase();
     return;
   }
-  const meta = data.meta, feats = data.blocks.features, providers = meta.providers;
-  $('sub').textContent = `FCC Broadband Data Collection, fiber-to-the-premises availability as of ${meta.as_of}, by 2020 census block`;
+  const meta = data.meta, hexes = data.hexes.features, hexes7 = (data.hexes7 || data.hexes).features, providers = meta.providers;
+  const bounds = L.latLngBounds(meta.bounds);
+  // open on the core of the region (SF, the East Bay and the Peninsula); the full extent is one zoom out
+  const core = L.latLngBounds([[37.25, -122.55], [38.05, -121.75]]);
+  map.fitBounds(bounds.contains(core.getCenter()) ? core : bounds.pad(0.02));
+  $('title').textContent = `Fiber internet in the ${meta.region}`;
+  $('sub').textContent = `FCC Broadband Data Collection, fiber-to-the-premises availability as of ${meta.as_of} · ${Object.keys(meta.counties).length} counties`;
   $('foot').innerHTML =
     `Source: FCC National Broadband Map availability data filed by each ISP (${meta.source_files.join(', ')}); ` +
-    `US Census TIGERweb 2020 blocks. Built ${meta.generated}. Per-home coordinates are not in the public FCC files, ` +
-    `so a block is colored by the best match among its locations; counts are FCC “serviceable locations” (roughly buildings), not housing units.`;
+    `US Census TIGERweb 2020 blocks; DataSF building footprints. Built ${meta.generated}. Per-home coordinates are not in the public FCC files, ` +
+    `so an area is colored by the best match among its locations; counts are FCC “serviceable locations” (roughly buildings), not housing units.`;
+  const denomAll = meta.denominator === 'all';   // true when a satellite/cable file supplied every location
+  $('bldgNote').textContent = (denomAll
+    ? 'Zoom in for census blocks, then buildings. Solid buildings sit in blocks where the selected ISPs reach every location; faded ones in blocks they reach only partly.'
+    : 'Zoom in for census blocks, then buildings. Solid buildings sit in blocks where the selected ISPs reach every fiber-served location; faded ones where they reach only some. Totals count fiber-served locations only, so blocks with unserved homes can look complete.')
+    + ' Buildings are available in San Francisco.';
 
   // ---- filter state -------------------------------------------------------
   const state = { isps: new Set(providers.map((_, i) => i)), minSpeed: 1000, biz: false, mode: 'speed', showNone: true, showBldg: true };
-  const denomAll = meta.denominator === 'all';   // true when a satellite/cable file supplied every location per block
-  const BLDG_ZOOM = 15;
-  $('bldgNote').textContent = denomAll
-    ? `Zoom in to see buildings. Solid buildings sit in blocks where the selected ISPs reach every location; faded ones in blocks they reach only partly.`
-    : `Zoom in to see buildings. Solid buildings sit in blocks where the selected ISPs reach every fiber-served location; faded ones where they reach only some. Totals count fiber-served locations only, so blocks with unserved homes can look complete.`;
-  const MINOR = 10;   // ISPs with fewer residential locations are collapsed by default
+  const MINOR = 500;   // ISPs with fewer residential locations are collapsed by default
   const minor = providers.filter(p => p.locations_res < MINOR).length;
   $('ispMore').textContent = minor ? `+${minor} more` : '';
   $('ispMore').addEventListener('click', () => {
@@ -273,70 +283,78 @@
   $('biz').addEventListener('change', (e) => { state.biz = e.target.checked; refresh(); });
   document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', (e) => { state.mode = e.target.value; refresh(); }));
   $('showNone').addEventListener('change', (e) => { state.showNone = e.target.checked; restyle(); });
-  $('showBldg').addEventListener('change', (e) => { state.showBldg = e.target.checked; syncBuildings(); });
+  $('showBldg').addEventListener('change', (e) => { state.showBldg = e.target.checked; syncLayers(); });
 
-  // ---- per-block evaluation ------------------------------------------------
-  // p.c = [[res, [[ispIdx, down, up], ...], count], ...]  (see scripts/build_map.py)
-  function evalBlock(p) {
+  // ---- per-feature evaluation (hexagons and blocks share the format) --------
+  // p.c = [[res, [[ispIdx, down, up], ...], count], ...]; p.t = [residential total, business-only total]
+  const speedTier = (best) => SPEED_TIERS.find(t => best >= t.min);
+  const countTier = (n) => COUNT_TIERS.find(t => n >= t.min);
+  function evalFeature(p, legend) {
     const per = new Map();       // ispIdx -> {n, nMatch, down, up}
-    let nAll = 0, nMatch = 0, best = 0;
+    let nAll = 0, nMatch = 0, best = 0, choice = 0;
     const matched = new Set();
     for (const [res, provs, cnt] of p.c) {
       if (!res && !state.biz) continue;
       nAll += cnt;
-      let hit = false;
+      let bestHere = 0, nHere = 0;
       for (const [i, down, up] of provs) {
         let e = per.get(i); if (!e) per.set(i, e = { n: 0, nMatch: 0, down: 0, up: 0 });
         e.n += cnt; e.down = Math.max(e.down, down); e.up = Math.max(e.up, up);
-        if (state.isps.has(i) && down >= state.minSpeed) { hit = true; e.nMatch += cnt; matched.add(i); if (down > best) best = down; }
+        if (state.isps.has(i) && down >= state.minSpeed) { nHere++; e.nMatch += cnt; matched.add(i); if (down > bestHere) bestHere = down; }
       }
-      if (hit) nMatch += cnt;
+      if (nHere) {
+        nMatch += cnt; if (bestHere > best) best = bestHere; if (nHere >= 2) choice += cnt;
+        if (legend) { const t = state.mode === 'speed' ? speedTier(bestHere) : countTier(nHere); if (t) legend[t.key] = (legend[t.key] || 0) + cnt; }
+      }
     }
     const nTotal = (p.t ? p.t[0] + (state.biz ? p.t[1] : 0) : nAll) || nAll;
     const cov = nMatch === 0 ? 'none' : nMatch >= nTotal ? 'full' : 'partial';
-    return { nAll, nMatch, best, nIsps: matched.size, per, nTotal, cov };
+    return { nAll, nMatch, best, nIsps: matched.size, per, nTotal, cov, choice };
   }
   function tierOf(ev) {
     if (!ev.nMatch) return null;
-    if (state.mode === 'speed') return SPEED_TIERS.find(t => ev.best >= t.min) || null;
-    return COUNT_TIERS.find(t => ev.nIsps >= t.min) || null;
+    return state.mode === 'speed' ? speedTier(ev.best) || null : countTier(ev.nIsps) || null;
   }
-  const evals = new Map();   // geoid -> {ev, tier}
+  const evals = new Map();   // feature id (h3 cell or block GEOID) -> {ev, tier}
+  let legendCounts = {};
   function recompute() {
-    let locMatch = 0, locAll = 0, blocks = 0, hu = 0;
+    let locMatch = 0, locAll = 0, locTotal = 0, choice = 0, hexMatch = 0;
     const ispMatch = providers.map(() => 0);
-    for (const f of feats) {
-      const ev = evalBlock(f.properties), tier = tierOf(ev);
-      evals.set(f.properties.geoid, { ev, tier });
-      locMatch += ev.nMatch; locAll += ev.nAll;
-      if (ev.nMatch) { blocks++; hu += f.properties.hu; }
+    legendCounts = {};
+    for (const f of hexes) {
+      const ev = evalFeature(f.properties, legendCounts), tier = tierOf(ev);
+      evals.set(f.properties.id, { ev, tier });
+      locMatch += ev.nMatch; locAll += ev.nAll; locTotal += ev.nTotal; choice += ev.choice;
+      if (ev.nMatch) hexMatch++;
       for (const [i, e] of ev.per) if (e.down >= state.minSpeed) ispMatch[i] += e.n;
     }
+    for (const f of hexes7) { const ev = evalFeature(f.properties); evals.set(f.properties.id, { ev, tier: tierOf(ev) }); }
+    for (const p of loadedBlocks.values()) { const ev = evalFeature(p); evals.set(p.geoid, { ev, tier: tierOf(ev) }); }
     providers.forEach((_, i) => $('ispcnt-' + i).textContent = fmt(ispMatch[i]));
     $('tiles').innerHTML = [
       [fmt(locMatch), 'locations match the filters'],
-      [pct(locMatch, locAll), `of the ${fmt(locAll)} fiber-served locations in SF`],
-      [fmt(blocks) + ' / ' + fmt(feats.length), 'census blocks with a match'],
-      [pct(hu, meta.housing_units_total), 'of SF housing units are in those blocks'],
+      [pct(locMatch, denomAll ? locTotal : locAll), `of the ${fmt(denomAll ? locTotal : locAll)} ${denomAll ? '' : 'fiber-served '}locations in the ${meta.region}`],
+      [fmt(choice), 'of them can choose between 2+ matching ISPs'],
+      [fmt(hexMatch) + ' / ' + fmt(hexes.length), 'hexagons (0.7 km²) with a match'],
     ].map(([v, l]) => `<div class="tile"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
   }
   function renderLegend() {
     const tiers = state.mode === 'speed' ? SPEED_TIERS : COUNT_TIERS;
-    const counts = {};
-    for (const { tier } of evals.values()) if (tier) counts[tier.key] = (counts[tier.key] || 0) + 1;
-    const none = feats.length - Object.values(counts).reduce((a, b) => a + b, 0);
-    $('legend').innerHTML = tiers.map(t => `<li><span class="sw" style="background:${color(t.key)}"></span><span class="lbl">${t.label}</span><span class="cnt">${fmt(counts[t.key] || 0)} blocks</span></li>`).join('') +
-      `<li><span class="sw" style="background:${color('none')};opacity:.6"></span><span class="lbl">No match</span><span class="cnt">${fmt(none)} blocks</span></li>`;
+    const matched = Object.values(legendCounts).reduce((a, b) => a + b, 0);
+    const none = hexes.reduce((a, f) => a + evals.get(f.properties.id).ev.nAll, 0) - matched;
+    $('legend').innerHTML = tiers.map(t => `<li><span class="sw" style="background:${color(t.key)}"></span><span class="lbl">${t.label}</span><span class="cnt">${fmt(legendCounts[t.key] || 0)} loc.</span></li>`).join('') +
+      `<li><span class="sw" style="background:${color('none')};opacity:.6"></span><span class="lbl">No match</span><span class="cnt">${fmt(none)} loc.</span></li>`;
   }
 
-  // ---- map layer ----------------------------------------------------------
-  const layerByGeoid = new Map();
-  let buildingsOn = false;   // true while the building layer is visible (zoomed in)
-  function styleFor(p) {
-    const { tier } = evals.get(p.geoid);
-    const dim = buildingsOn ? 0.25 : 1;
-    if (!tier) return { fillColor: color('none'), fillOpacity: state.showNone ? 0.22 * dim : 0, color: color('none'), weight: state.showNone ? 0.4 : 0, opacity: state.showNone ? 0.5 : 0 };
-    return { fillColor: color(tier.key), fillOpacity: 0.7 * dim, color: buildingsOn ? color(tier.key) : css('--surface'), weight: buildingsOn ? 1 : 0.6, opacity: 0.9 };
+  // ---- styling shared by hexagons and blocks --------------------------------
+  let buildingsOn = false, blocksOn = false;
+  function styleFor(id, isBlock) {
+    const e = evals.get(id);
+    const tier = e ? e.tier : null;
+    const dim = (isBlock && buildingsOn) ? 0.25 : 1;
+    const outline = isBlock || map.getZoom() >= 11;   // hexagons lose their outlines when zoomed out, else they wash out
+    if (!tier) return { fillColor: color('none'), fillOpacity: state.showNone ? 0.22 * dim : 0, color: color('none'), weight: state.showNone && outline ? 0.4 : 0, opacity: state.showNone ? 0.5 : 0 };
+    return { fillColor: color(tier.key), fillOpacity: (isBlock ? 0.7 : 0.75) * dim, color: (isBlock && buildingsOn) ? color(tier.key) : css('--surface'), weight: (isBlock && buildingsOn) ? 1 : outline ? 0.6 : 0, opacity: 0.9 };
   }
   function fccUrl(lat, lng) {
     const m = /^(\w{3})\w* (\d{4})$/.exec(meta.as_of || '');
@@ -344,57 +362,102 @@
     const sp = state.minSpeed >= 1000 ? '1000_100' : state.minSpeed >= 250 ? '250_25' : state.minSpeed >= 100 ? '100_20' : '25_3';
     return `https://broadbandmap.fcc.gov/location-summary/fixed?version=${version}&zoom=17&vlon=${lng.toFixed(6)}&vlat=${lat.toFixed(6)}&br=r&speed=${sp}&tech=3`;
   }
-  function centerOf(geoid) {
-    const l = layerByGeoid.get(geoid);
-    return l ? l.getBounds().getCenter() : null;
-  }
-  function detailHtml(p, at) {
-    const { ev, tier } = evals.get(p.geoid);
+  function detailHtml(p, at, kind) {
+    const id = kind === 'hex' ? p.id : p.geoid;
+    const e = evals.get(id); if (!e) return '';
+    const { ev, tier } = e;
     const head = tier
       ? `<span class="sw" style="background:${color(tier.key)}"></span>${state.mode === 'speed' ? 'Up to ' + speed(ev.best) : ev.nIsps + (ev.nIsps === 1 ? ' ISP' : ' ISPs')} · ${fmt(ev.nMatch)} matching location${ev.nMatch === 1 ? '' : 's'}`
       : `<span class="sw" style="background:${color('none')}"></span>${ev.nAll ? 'No ISP matches the filters' : 'No fiber reported'}`;
     const rows = [...ev.per.entries()].sort((a, b) => b[1].n - a[1].n).map(([i, e]) =>
       `<tr class="${e.nMatch ? '' : 'off'}"><td>${providers[i].name}</td><td class="n">${fmt(e.n)}</td><td class="n">${speed(e.down)} ↓ ${speed(e.up)} ↑</td></tr>`).join('');
     const what = denomAll ? 'location' : 'fiber-served location';
-    const cov = ev.cov === 'full' ? `<div class="cov">Reaches all ${fmt(ev.nTotal)} ${what}s in this block</div>`
-      : ev.cov === 'partial' ? `<div class="cov partial">Reaches ${fmt(ev.nMatch)} of ${fmt(ev.nTotal)} ${what}s in this block (${pct(ev.nMatch, ev.nTotal)}); the FCC data does not say which</div>` : '';
-    const c = at || centerOf(p.geoid);
-    const link = c ? `<a class="fcc" href="${fccUrl(c.lat, c.lng)}" target="_blank" rel="noopener">Open this spot in the FCC map (per-address detail) ↗</a>` : '';
-    return `<div class="tip"><div class="hd">${head}</div><div class="id">Block ${p.geoid}</div>` +
+    const where = kind === 'hex' ? 'this hexagon' : 'this block';
+    const cov = ev.cov === 'full' ? `<div class="cov">Reaches all ${fmt(ev.nTotal)} ${what}s in ${where}</div>`
+      : ev.cov === 'partial' ? `<div class="cov partial">Reaches ${fmt(ev.nMatch)} of ${fmt(ev.nTotal)} ${what}s in ${where} (${pct(ev.nMatch, ev.nTotal)}); the FCC data does not say which</div>` : '';
+    const link = at ? `<a class="fcc" href="${fccUrl(at.lat, at.lng)}" target="_blank" rel="noopener">Open this spot in the FCC map (per-address detail) ↗</a>` : '';
+    const label = kind === 'hex' ? `Hexagon ${p.id} (about ${p.id.startsWith('87') ? '5' : '0.7'} km²) · zoom in for ${p.id.startsWith('87') ? 'finer hexagons and ' : ''}census blocks` : `Census block ${p.geoid} · ${fmt(p.hu)} housing units · ${fmt(p.pop)} residents (2020)`;
+    return `<div class="tip"><div class="hd">${head}</div><div class="id">${label}</div>` +
       (rows ? `<table><tr><th>ISP</th><th style="text-align:right">Locations</th><th>Max advertised</th></tr>${rows}</table>` : '') +
       cov +
-      `<div class="sum">${fmt(ev.nAll)} fiber-served location${ev.nAll === 1 ? '' : 's'}${denomAll ? ` of ${fmt(ev.nTotal)} total` : ''} · ${fmt(p.hu)} housing units · ${fmt(p.pop)} residents (2020)</div>${link}</div>`;
+      `<div class="sum">${fmt(ev.nAll)} fiber-served location${ev.nAll === 1 ? '' : 's'}${denomAll ? ` of ${fmt(ev.nTotal)} total` : ''}</div>${link}</div>`;
   }
-  recompute();
-  let hovered = null;
-  const layer = L.geoJSON(data.blocks, {
-    style: f => styleFor(f.properties),
-    onEachFeature: (f, l) => {
-      layerByGeoid.set(f.properties.geoid, l);
-      l.bindTooltip(() => detailHtml(f.properties), { sticky: true, className: 'blk', opacity: 1, direction: 'top', offset: [0, -8] });
-      l.on('mouseover', () => { if (evals.get(f.properties.geoid).tier || state.showNone) { hovered = l; l.setStyle({ weight: 2, color: css('--ink'), opacity: 1 }); l.bringToFront(); } });
-      l.on('mouseout', () => { if (hovered === l) { l.setStyle(styleFor(f.properties)); hovered = null; } });
-      l.on('click', (e) => { if (evals.get(f.properties.geoid).tier || state.showNone) L.popup({ maxWidth: 340 }).setLatLng(e.latlng).setContent(detailHtml(f.properties, e.latlng)).openOn(map); });
-    },
-  }).addTo(map);
-  if (feats.length) map.fitBounds(layer.getBounds().pad(0.02));
-  function restyle() { layer.eachLayer(l => l.setStyle(styleFor(l.feature.properties))); restyleBuildings(); }
+  function attach(layer, p, kind) {
+    layer.bindTooltip(() => detailHtml(p, layer.getBounds().getCenter(), kind), { sticky: true, className: 'blk', opacity: 1, direction: 'top', offset: [0, -8] });
+    layer.on('mouseover', () => { const e = evals.get(kind === 'hex' ? p.id : p.geoid); if ((e && e.tier) || state.showNone) { layer.setStyle({ weight: 2, color: css('--ink'), opacity: 1 }); layer.bringToFront(); } });
+    layer.on('mouseout', () => layer.setStyle(styleFor(kind === 'hex' ? p.id : p.geoid, kind === 'block')));
+    layer.on('click', (e) => L.popup({ maxWidth: 340 }).setLatLng(e.latlng).setContent(detailHtml(p, e.latlng, kind)).openOn(map));
+  }
 
-  // ---- building footprints (DataSF), loaded per zoom-14 tile when zoomed in ----
-  // chunk format: {g:[geoid...], b:[[gi, height_m, x0, y0, [dx,dy,...]], ...]} in 1e-6 degrees, delta-encoded
-  const propsByGeoid = new Map(feats.map(f => [f.properties.geoid, f.properties]));
-  const bldgIndex = new Set();
-  let bldgReady = false;
-  fetch('data/buildings/index.json').then(r => r.ok ? r.json() : null).then(ix => {
-    if (ix) { ix.tiles.forEach(t => bldgIndex.add(t)); bldgReady = true; syncBuildings(); }
-    else $('bldgNote').textContent = 'Building footprints are not built (run scripts/fetch_buildings.py).';
-  }).catch(() => {});
-  const bldgChunks = new Map();     // "x_y" -> L.LayerGroup (or 'loading')
-  const bldgPolys = [];             // [polygon, geoid]
+  // ---- hexagon overview layer -------------------------------------------------
+  const loadedBlocks = new Map();   // geoid -> properties (for blocks in loaded tiles)
+  recompute();
+  const hexLayer = L.geoJSON(data.hexes, {
+    style: f => styleFor(f.properties.id, false),
+    onEachFeature: (f, l) => attach(l, f.properties, 'hex'),
+  });
+  const hex7Layer = L.geoJSON({ type: 'FeatureCollection', features: hexes7 }, {
+    style: f => styleFor(f.properties.id, false),
+    onEachFeature: (f, l) => attach(l, f.properties, 'hex'),
+  });
+
+  // ---- generic tile chunk loader ------------------------------------------------
   function tileXY(lng, lat, z) {
     const n = 2 ** z, r = lat * Math.PI / 180;
     return [Math.floor((lng + 180) / 360 * n), Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n)];
   }
+  function chunkLoader({ indexUrl, urlFor, pad, build, onLoaded, noteOnMissing }) {
+    const index = new Set(); let z = 0, ready = false;
+    const chunks = new Map();     // key -> LayerGroup | 'loading'
+    fetch(indexUrl).then(r => r.ok ? r.json() : null).then(ix => {
+      if (ix) { z = ix.z; ix.tiles.forEach(t => index.add(t)); ready = true; syncLayers(); }
+      else if (noteOnMissing) noteOnMissing();
+    }).catch(() => {});
+    function sync(show) {
+      if (!ready) return Promise.resolve();
+      if (!show) { for (const g of chunks.values()) if (g !== 'loading') map.removeLayer(g); return Promise.resolve(); }
+      const b = map.getBounds();
+      const [x0, y0] = tileXY(b.getWest(), b.getNorth(), z), [x1, y1] = tileXY(b.getEast(), b.getSouth(), z);
+      const visible = new Set(), pending = [];
+      for (let x = x0 - pad; x <= x1 + pad; x++) for (let y = y0 - pad; y <= y1 + pad; y++) {
+        const key = `${x}_${y}`;
+        if (!index.has(key)) continue;
+        visible.add(key);
+        const have = chunks.get(key);
+        if (have === 'loading') continue;
+        if (have) { if (!map.hasLayer(have)) have.addTo(map); continue; }
+        chunks.set(key, 'loading');
+        pending.push(fetch(urlFor(z, key)).then(r => r.json()).then(d => {
+          const g = build(d); chunks.set(key, g);
+          if (show()) g.addTo(map);
+          if (onLoaded) onLoaded();
+        }).catch(() => chunks.delete(key)));
+      }
+      for (const [key, g] of chunks) if (g !== 'loading' && !visible.has(key)) map.removeLayer(g);
+      return Promise.all(pending);
+    }
+    const inView = () => { if (!ready) return false; const b = map.getBounds(); const [x0, y0] = tileXY(b.getWest(), b.getNorth(), z), [x1, y1] = tileXY(b.getEast(), b.getSouth(), z);
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) if (index.has(`${x}_${y}`)) return true; return false; };
+    return { sync, chunks, inView };
+  }
+
+  // ---- census blocks (zoom 12+) ---------------------------------------------------
+  const blockLayers = [];           // [layer, geoid]
+  const blocks = chunkLoader({
+    indexUrl: 'data/blocks/index.json',
+    urlFor: (z, key) => `data/blocks/${z}_${key}.json`,
+    pad: 0,
+    build: (fc) => {
+      // a block sits in every tile its bounding box touches; draw it once
+      const fresh = fc.features.filter(f => !loadedBlocks.has(f.properties.geoid));
+      for (const f of fresh) { const p = f.properties; loadedBlocks.set(p.geoid, p); const ev = evalFeature(p); evals.set(p.geoid, { ev, tier: tierOf(ev) }); }
+      return L.geoJSON({ type: 'FeatureCollection', features: fresh }, { style: f => styleFor(f.properties.geoid, true), onEachFeature: (f, l) => { blockLayers.push([l, f.properties.geoid]); attach(l, f.properties, 'block'); } });
+    },
+    onLoaded: () => restyleBuildings(),
+  });
+
+  // ---- building footprints (zoom 15+; delta-encoded chunks from scripts/fetch_buildings.py) ----
+  const bldgPolys = [];             // [polygon, geoid]
   function bldgStyle(geoid) {
     const e = evals.get(geoid);
     if (!e) return { fillColor: color('none'), fillOpacity: 0.15, color: color('none'), weight: 0.5, opacity: 0.4 };
@@ -403,58 +466,63 @@
     if (ev.cov === 'full') return { fillColor: color(tier.key), fillOpacity: 0.85, color: css('--surface'), weight: 0.6, opacity: 0.9 };
     return { fillColor: color(tier.key), fillOpacity: 0.3, color: color(tier.key), weight: 1, opacity: 0.9, dashArray: '3 3' };
   }
-  function decodeChunk(data) {
-    const group = L.layerGroup();
-    for (const [gi, h, x0, y0, d] of data.b) {
-      const geoid = data.g[gi];
-      const ring = [[y0 / 1e6, x0 / 1e6]];
-      let x = x0, y = y0;
-      for (let i = 0; i < d.length; i += 2) { x += d[i]; y += d[i + 1]; ring.push([y / 1e6, x / 1e6]); }
-      const poly = L.polygon(ring, bldgStyle(geoid));
-      const p = propsByGeoid.get(geoid);
-      if (p) {
-        poly.bindTooltip(() => detailHtml(p, poly.getBounds().getCenter()) + (h ? `<div class="tip"><div class="sum">Building height ≈ ${h} m</div></div>` : ''),
+  const buildings = chunkLoader({
+    indexUrl: 'data/buildings/index.json',
+    urlFor: (z, key) => `data/buildings/${z}_${key}.json`,
+    pad: 0,
+    build: (d) => {
+      const group = L.layerGroup();
+      for (const [gi, h, x0, y0, deltas] of d.b) {
+        const geoid = d.g[gi];
+        const ring = [[y0 / 1e6, x0 / 1e6]];
+        let x = x0, y = y0;
+        for (let i = 0; i < deltas.length; i += 2) { x += deltas[i]; y += deltas[i + 1]; ring.push([y / 1e6, x / 1e6]); }
+        const poly = L.polygon(ring, bldgStyle(geoid));
+        poly.bindTooltip(() => { const p = loadedBlocks.get(geoid); return (p ? detailHtml(p, poly.getBounds().getCenter(), 'block') : '') + (h ? `<div class="tip"><div class="sum">Building height ≈ ${h} m</div></div>` : ''); },
           { sticky: true, className: 'blk', opacity: 1, direction: 'top', offset: [0, -8] });
-        poly.on('click', (e) => L.popup({ maxWidth: 340 }).setLatLng(e.latlng).setContent(detailHtml(p, e.latlng)).openOn(map));
+        poly.on('click', (e) => { const p = loadedBlocks.get(geoid); if (p) L.popup({ maxWidth: 340 }).setLatLng(e.latlng).setContent(detailHtml(p, e.latlng, 'block')).openOn(map); });
+        bldgPolys.push([poly, geoid]);
+        group.addLayer(poly);
       }
-      bldgPolys.push([poly, geoid]);
-      group.addLayer(poly);
-    }
-    return group;
-  }
-  function syncBuildings() {
-    const want = bldgReady && state.showBldg && map.getZoom() >= BLDG_ZOOM;
-    if (want !== buildingsOn) { buildingsOn = want; layer.eachLayer(l => l.setStyle(styleFor(l.feature.properties))); }
-    if (!want) { for (const g of bldgChunks.values()) if (g !== 'loading') map.removeLayer(g); return; }
-    const b = map.getBounds();
-    const [x0, y0] = tileXY(b.getWest(), b.getNorth(), 14), [x1, y1] = tileXY(b.getEast(), b.getSouth(), 14);
-    const visible = new Set();
-    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
-      const key = `${x}_${y}`;
-      if (!bldgIndex.has(key)) continue;
-      visible.add(key);
-      const have = bldgChunks.get(key);
-      if (have === 'loading') continue;
-      if (have) { if (!map.hasLayer(have)) have.addTo(map); continue; }
-      bldgChunks.set(key, 'loading');
-      fetch(`data/buildings/14_${key}.json`).then(r => r.json()).then(data => {
-        const g = decodeChunk(data); bldgChunks.set(key, g);
-        if (buildingsOn && map.getZoom() >= BLDG_ZOOM) g.addTo(map);
-      }).catch(() => bldgChunks.delete(key));
-    }
-    for (const [key, g] of bldgChunks) if (g !== 'loading' && !visible.has(key)) map.removeLayer(g);
-  }
+      return group;
+    },
+    noteOnMissing: () => { $('bldgNote').textContent = 'Building footprints are not built (run scripts/fetch_buildings.py).'; },
+  });
   function restyleBuildings() { for (const [poly, geoid] of bldgPolys) poly.setStyle(bldgStyle(geoid)); }
-  map.on('zoomend moveend', syncBuildings);
+
+  // ---- which layer shows at which zoom ------------------------------------------------
+  function syncLayers() {
+    const zoom = map.getZoom();
+    const wantBlocks = zoom >= BLOCK_ZOOM, wantBldg = wantBlocks && state.showBldg && zoom >= BLDG_ZOOM;
+    const wantHex8 = !wantBlocks && zoom >= HEX8_ZOOM, wantHex7 = !wantBlocks && zoom < HEX8_ZOOM;
+    for (const [layer, want] of [[hexLayer, wantHex8], [hex7Layer, wantHex7]]) {
+      if (want && !map.hasLayer(layer)) { layer.addTo(map); layer.eachLayer(l => l.setStyle(styleFor(l.feature.properties.id, false))); }
+      if (!want && map.hasLayer(layer)) map.removeLayer(layer);
+    }
+    const flip = wantBldg !== buildingsOn;
+    blocksOn = wantBlocks; buildingsOn = wantBldg;
+    if (flip) for (const [l, geoid] of blockLayers) l.setStyle(styleFor(geoid, true));
+    $('level').textContent = wantBldg ? (buildings.inView() ? 'Buildings · census blocks' : 'Census blocks · no building footprints here yet')
+      : wantBlocks ? 'Census blocks · zoom in for buildings' : wantHex8 ? 'Hexagons (0.7 km²) · zoom in for census blocks' : 'Hexagons (5 km²) · zoom in for detail';
+    return Promise.all([blocks.sync(wantBlocks && (() => map.getZoom() >= BLOCK_ZOOM)), buildings.sync(wantBldg && (() => buildingsOn))]);
+  }
+  function restyle() {
+    if (map.hasLayer(hexLayer)) hexLayer.eachLayer(l => l.setStyle(styleFor(l.feature.properties.id, false)));
+    if (map.hasLayer(hex7Layer)) hex7Layer.eachLayer(l => l.setStyle(styleFor(l.feature.properties.id, false)));
+    for (const [l, geoid] of blockLayers) l.setStyle(styleFor(geoid, true));
+    restyleBuildings();
+  }
   function refresh() { recompute(); renderLegend(); restyle(); }
   renderLegend();
+  syncLayers();
+  map.on('zoomend moveend', syncLayers);
 
   // ---- theme ---------------------------------------------------------------
   setBase();
   $('btnTheme').addEventListener('click', () => { document.documentElement.dataset.theme = isDark() ? 'light' : 'dark'; setBase(); refresh(); });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (!document.documentElement.dataset.theme) { setBase(); refresh(); } });
 
-  // ---- address search (OpenStreetMap Nominatim, limited to the SF bounding box) ----
+  // ---- address search (OpenStreetMap Nominatim, limited to the region) ----
   function pointInRing(pt, ring) {
     let inside = false;
     for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -463,12 +531,14 @@
     }
     return inside;
   }
-  function blockAt(lng, lat) {
+  function featureAt(lng, lat) {
     const pt = [lng, lat];
-    for (const f of feats) {
-      const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
-      for (const poly of polys) if (pointInRing(pt, poly[0]) && !poly.slice(1).some(h => pointInRing(pt, h))) return f;
+    for (const [l, geoid] of blockLayers) {
+      const g = l.feature.geometry;
+      const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+      for (const poly of polys) if (pointInRing(pt, poly[0]) && !poly.slice(1).some(h => pointInRing(pt, h))) return [loadedBlocks.get(geoid), 'block'];
     }
+    for (const f of hexes) if (pointInRing(pt, f.geometry.coordinates[0])) return [f.properties, 'hex'];
     return null;
   }
   let marker = null;
@@ -477,26 +547,29 @@
     const q = $('q').value.trim(); if (!q) return;
     $('msg').textContent = 'Searching…';
     try {
-      const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&bounded=1&viewbox=-122.52,37.83,-122.35,37.70&q=' + encodeURIComponent(q);
+      const vb = `${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()},${bounds.getSouth()}`;
+      const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&bounded=1&viewbox=' + vb + '&q=' + encodeURIComponent(q);
       const res = await (await fetch(url, { headers: { Accept: 'application/json' } })).json();
-      if (!res.length) { $('msg').textContent = 'No match inside San Francisco.'; return; }
+      if (!res.length) { $('msg').textContent = `No match inside the ${meta.region}.`; return; }
       const lat = +res[0].lat, lng = +res[0].lon;
       if (marker) marker.remove();
       marker = L.circleMarker([lat, lng], { radius: 7, color: css('--ink'), weight: 2, fillColor: css('--surface'), fillOpacity: 1 }).addTo(map);
       map.setView([lat, lng], 17);
-      const f = blockAt(lng, lat);
+      await syncLayers();
+      const hit = featureAt(lng, lat);
       const name = res[0].display_name.split(',').slice(0, 2).join(',');
-      $('msg').innerHTML = `${name}${f ? '' : ' — not inside a mapped block'} · <a href="${fccUrl(lat, lng)}" target="_blank" rel="noopener">check this address on the FCC map ↗</a>`;
-      if (f) L.popup({ maxWidth: 340 }).setLatLng([lat, lng]).setContent(detailHtml(f.properties, L.latLng(lat, lng))).openOn(map);
+      $('msg').innerHTML = `${name}${hit ? '' : ' — not inside a mapped area'} · <a href="${fccUrl(lat, lng)}" target="_blank" rel="noopener">check this address on the FCC map ↗</a>`;
+      if (hit) L.popup({ maxWidth: 340 }).setLatLng([lat, lng]).setContent(detailHtml(hit[0], L.latLng(lat, lng), hit[1])).openOn(map);
     } catch (err) { $('msg').textContent = 'Search failed (needs internet access to nominatim.openstreetmap.org).'; }
   });
 
-  // ---- table view + CSV --------------------------------------------------------
+  // ---- table view + CSV (hexagons: the region-wide, always-loaded layer) ----
+  function hexCenter(f) { const r = f.geometry.coordinates[0]; let lat = 0, lng = 0; for (let i = 0; i < 6; i++) { lng += r[i][0]; lat += r[i][1]; } return [lat / 6, lng / 6]; }
   function rowsForExport() {
-    return feats.map(f => {
-      const p = f.properties, { ev } = evals.get(p.geoid);
+    return hexes.map(f => {
+      const p = f.properties, { ev } = evals.get(p.id);
       const isps = [...ev.per.entries()].filter(([i, e]) => e.nMatch).map(([i]) => providers[i].name);
-      return { p, ev, isps };
+      return { p, ev, isps, center: hexCenter(f) };
     });
   }
   const modal = $('modal');
@@ -504,33 +577,32 @@
     const LIMIT = 1500;
     const all = rowsForExport().filter(r => r.ev.nMatch).sort((a, b) => b.ev.nMatch - a.ev.nMatch);
     const rows = all.slice(0, LIMIT);
-    $('modalNote').textContent = rows.length < all.length ? `showing ${fmt(LIMIT)} of ${fmt(all.length)} blocks; the CSV has all` : `${fmt(all.length)} blocks`;
+    $('modalNote').textContent = rows.length < all.length ? `showing ${fmt(LIMIT)} of ${fmt(all.length)} hexagons; the CSV has all` : `${fmt(all.length)} hexagons`;
     $('dataTable').innerHTML =
-      `<thead><tr><th>Block GEOID</th><th>Matching ISPs</th><th>Matching loc.</th><th>${denomAll ? 'All loc.' : 'All fiber loc.'}</th><th>Coverage</th><th>Best speed</th><th>Housing units</th></tr></thead><tbody>` +
-      rows.map(({ p, ev, isps }) => `<tr data-geoid="${p.geoid}"><td>${p.geoid}</td><td>${isps.join(', ')}</td><td>${fmt(ev.nMatch)}</td><td>${fmt(ev.nTotal)}</td><td>${ev.cov === 'full' ? 'all' : pct(ev.nMatch, ev.nTotal)}</td><td>${speed(ev.best)}</td><td>${fmt(p.hu)}</td></tr>`).join('') + '</tbody>';
+      `<thead><tr><th>Hexagon</th><th>Matching ISPs</th><th>Matching loc.</th><th>${denomAll ? 'All loc.' : 'All fiber loc.'}</th><th>Coverage</th><th>Best speed</th></tr></thead><tbody>` +
+      rows.map(({ p, ev, isps, center }) => `<tr data-lat="${center[0]}" data-lng="${center[1]}"><td>${p.id}</td><td>${isps.join(', ')}</td><td>${fmt(ev.nMatch)}</td><td>${fmt(ev.nTotal)}</td><td>${ev.cov === 'full' ? 'all' : pct(ev.nMatch, ev.nTotal)}</td><td>${speed(ev.best)}</td></tr>`).join('') + '</tbody>';
     modal.classList.add('open');
   });
   $('dataTable').addEventListener('click', (e) => {
-    const tr = e.target.closest('tr[data-geoid]'); if (!tr) return;
-    const l = layer.getLayers().find(x => x.feature.properties.geoid === tr.dataset.geoid);
-    if (l) { modal.classList.remove('open'); map.fitBounds(l.getBounds().pad(1.5)); l.openTooltip(l.getBounds().getCenter()); }
+    const tr = e.target.closest('tr[data-lat]'); if (!tr) return;
+    modal.classList.remove('open'); map.setView([+tr.dataset.lat, +tr.dataset.lng], 14);
   });
   $('btnClose').addEventListener('click', () => modal.classList.remove('open'));
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') modal.classList.remove('open'); });
   $('btnCsv').addEventListener('click', () => {
     const q = (s) => '"' + String(s).replace(/"/g, '""') + '"';
-    const cols = ['geoid', 'housing_units', 'population', 'fiber_locations_any_isp', 'total_locations', 'matching_locations', 'coverage', 'best_down_mbps', 'matching_isps']
+    const cols = ['h3_res8', 'lat', 'lng', 'fiber_locations_any_isp', 'total_locations', 'matching_locations', 'coverage', 'best_down_mbps', 'matching_isps']
       .concat(providers.flatMap(p => [`${p.name}_locations`, `${p.name}_max_down_mbps`]));
     const lines = [cols.map(q).join(',')];
-    for (const { p, ev, isps } of rowsForExport()) {
-      const cells = [p.geoid, p.hu, p.pop, ev.nAll, ev.nTotal, ev.nMatch, ev.cov, ev.best, isps.join('; ')]
+    for (const { p, ev, isps, center } of rowsForExport()) {
+      const cells = [p.id, center[0].toFixed(5), center[1].toFixed(5), ev.nAll, ev.nTotal, ev.nMatch, ev.cov, ev.best, isps.join('; ')]
         .concat(providers.flatMap((_, i) => { const e = ev.per.get(i); return e ? [e.n, e.down] : [0, 0]; }));
       lines.push(cells.map(q).join(','));
     }
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
-    a.download = 'sf_fiber_blocks.csv'; a.click(); URL.revokeObjectURL(a.href);
+    a.download = 'bay_area_fiber_hexagons.csv'; a.click(); URL.revokeObjectURL(a.href);
   });
 })();
 </script>

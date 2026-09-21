@@ -5,13 +5,13 @@ PORT ?= 8000
 
 all: blocks fetch build   ## download blocks + FCC data, then build the map
 
-blocks:                    ## census block boundaries for San Francisco (public, no key)
+blocks:                    ## census block boundaries for the nine Bay Area counties (public, no key)
 	$(PY) scripts/fetch_blocks.py
 
 fetch:                     ## Sonic's CA fiber availability file (needs FCC_USERNAME / FCC_HASH_VALUE, or --mode web)
 	$(PY) scripts/fetch_fcc.py $(FETCH_ARGS)
 
-build:                     ## join FCC rows to blocks -> site/data/fiber_blocks.js
+build:                     ## join FCC rows to hexagons + blocks -> site/data/overview.js, site/data/blocks/
 	$(PY) scripts/build_map.py $(BUILD_ARGS)
 
 buildings:                 ## DataSF building footprints -> site/data/buildings/ (needs shapely)
@@ -25,4 +25,4 @@ test:
 	$(PY) -m unittest discover -s tests -v
 
 clean:                     ## remove the generated map data (it is committed; rebuild with make build)
-	rm -f site/data/fiber_blocks.js
+	rm -rf site/data/overview.js site/data/blocks
