@@ -90,11 +90,32 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(set(locs), {"1000050"})
 
 
+class SummaryTests(unittest.TestCase):
+    SUMMARY = FIX / "synthetic_summary_by_geography.csv"
+
+    def test_is_availability_file(self):
+        self.assertTrue(build_map.is_availability_file(Path("bdc_06_FibertothePremises_fixed_broadband_D25_15sep2026.zip")))
+        self.assertFalse(build_map.is_availability_file(Path("bdc_us_fixed_broadband_summary_by_geography_D25_15sep2026.zip")))
+        self.assertFalse(build_map.is_availability_file(Path("bdc_us_provider_list_D25_15sep2026.zip")))
+        self.assertFalse(build_map.is_availability_file(Path("notes.txt")))
+
+    def test_load_fcc_summary(self):
+        s = build_map.load_fcc_summary([self.SUMMARY], {"06075", "06001"})
+        self.assertEqual((s["units_res"], s["counties"]), (4000, 2))
+        # unit-weighted: (1000*0.5 + 3000*0.3) / 4000 = 0.35 for fiber at 1000/100
+        self.assertAlmostEqual(s["share"]["fiber"]["speed_1000_100"], 0.35)
+        self.assertAlmostEqual(s["share"]["any"]["speed_1000_100"], 0.875)
+        self.assertIsNone(build_map.load_fcc_summary([self.SUMMARY], {"06999"}))
+        only_sf = build_map.load_fcc_summary([self.SUMMARY], {"06075"})
+        self.assertAlmostEqual(only_sf["share"]["fiber"]["speed_100_20"], 0.6)   # B, Urban and Place rows ignored
+
+
 class EndToEndTests(unittest.TestCase):
     def test_cli_writes_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             raw = Path(tmp) / "raw"; raw.mkdir()
             shutil.copy(SAMPLE, raw / "bdc_06_FibertothePremises_fixed_broadband_D25_test.csv")
+            shutil.copy(SummaryTests.SUMMARY, raw / "bdc_us_fixed_broadband_summary_by_geography_D25_test.csv")
             out = Path(tmp) / "site"
             subprocess.run([sys.executable, str(ROOT / "scripts" / "build_map.py"), "--raw", str(raw),
                             "--blocks-dir", str(ROOT / "data" / "blocks"), "--county", "06075", "--region", "Test",
@@ -108,6 +129,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual((meta["denominator"], meta["locations_any_tech"]), ("all", 9))
             self.assertEqual([p["name"] for p in meta["providers"]][:2], ["AT&T", "Sonic"])
             self.assertEqual(meta["counties"], {"06075": "San Francisco"})
+            self.assertEqual(meta["fcc_summary"]["units_res"], 1000)          # summary file used, not treated as availability
             self.assertEqual(meta["blocks_total"], 5018)   # blocks with housing (fixture adds no housing-free fiber blocks)
             hexes = {f["properties"]["id"]: f["properties"] for f in payload["hexes"]["features"]}
             self.assertIn(CELLS[GEOIDS[0]], hexes)

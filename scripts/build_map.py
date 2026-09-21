@@ -5,6 +5,13 @@ and emit the map's data files.
 Inputs
   data/raw/*.csv | *.zip      FCC BDC "availability" CSVs (as downloaded from
                                broadbandmap.fcc.gov, optionally still zipped).
+  data/raw/*summary_by_geography*  optional: the FCC "Fixed Broadband Summary by
+                               Geography" file.  Its County rows give the share
+                               of residential units that can get each speed by
+                               technology, computed by the FCC against the full
+                               (licensed) location Fabric, i.e. the honest
+                               "% of homes" figure the availability file alone
+                               cannot give.  Exposed as meta.fcc_summary.
   data/blocks/06<county>.geojson  Census blocks from scripts/fetch_blocks.py.
 
 Outputs
@@ -117,6 +124,53 @@ def as_of_from_name(name: str) -> str | None:
         return None
     month = "June" if m.group(1) == "J" else "December"
     return f"{month} 20{m.group(2)}"
+
+
+SUMMARY_SPEEDS = ["speed_25_3", "speed_100_20", "speed_250_25", "speed_1000_100"]
+
+
+def is_availability_file(path: Path) -> bool:
+    """The download page also offers summary and provider-list files; skip those."""
+    n = path.name.lower()
+    return path.suffix.lower() in (".csv", ".zip") and "summary" not in n and "provider_list" not in n
+
+
+def load_fcc_summary(paths, counties) -> dict | None:
+    """Unit-weighted availability shares for the region from the FCC summary-by-geography
+    file (County rows, residential, all areas): {units, per_tech: {tech: {speed: share}}}."""
+    tech_labels = {"Fiber": "fiber", "Fiber to the Premises": "fiber", "Any Technology": "any"}
+    units: dict[str, int] = {}
+    acc: dict[str, dict[str, float]] = {t: {k: 0.0 for k in SUMMARY_SPEEDS} for t in tech_labels.values()}
+    found = False
+    for path in paths:
+        for header, rows in iter_csv_tables(path):
+            col = {name: i for i, name in enumerate(header)}
+            need = ("geography_type", "geography_id", "area_data_type", "biz_res", "technology", "total_units")
+            if any(k not in col for k in need) or any(k not in col for k in SUMMARY_SPEEDS):
+                continue
+            for row in rows:
+                if row[col["geography_type"]] != "County" or row[col["area_data_type"]] != "Total" or row[col["biz_res"]] != "R":
+                    continue
+                cid = row[col["geography_id"]].zfill(5)
+                if cid not in counties:
+                    continue
+                tech = tech_labels.get(row[col["technology"]])
+                if not tech:
+                    continue
+                found = True
+                u = int(float(row[col["total_units"]] or 0))
+                units[cid] = max(units.get(cid, 0), u)
+                for k in SUMMARY_SPEEDS:
+                    acc[tech][k] += u * float(row[col[k]] or 0)
+    if not found:
+        return None
+    total = sum(units.values())
+    return {
+        "source": "FCC Fixed Broadband Summary by Geography (county rows, residential units, all areas)",
+        "units_res": total,
+        "counties": len(units),
+        "share": {t: {k: round(v / total, 4) for k, v in acc[t].items()} for t in acc} if total else {},
+    }
 
 
 def _speed(v: str) -> int:
@@ -300,7 +354,9 @@ def main() -> None:
     args = ap.parse_args()
 
     raw_dir = Path(args.raw)
-    paths = sorted(p for p in raw_dir.glob("*") if p.suffix.lower() in (".csv", ".zip"))
+    all_files = sorted(p for p in raw_dir.glob("*") if p.suffix.lower() in (".csv", ".zip"))
+    paths = [p for p in all_files if is_availability_file(p)]
+    summary_paths = [p for p in all_files if "summary_by_geography" in p.name.lower()]
     if not paths:
         raise SystemExit(f"no .csv/.zip files found in {raw_dir}/ - run scripts/fetch_fcc.py or drop the "
                          "FCC download there (see README)")
@@ -311,6 +367,12 @@ def main() -> None:
         raise SystemExit(f"missing block files (run scripts/fetch_blocks.py): {missing}")
 
     provider_ids = [p for p in args.provider_id.split(",") if p.strip()]
+    fcc_summary = load_fcc_summary(summary_paths, set(counties)) if summary_paths else None
+    if fcc_summary:
+        sh = fcc_summary["share"]
+        print(f"  FCC summary: {fcc_summary['units_res']:,} residential units in {fcc_summary['counties']} counties; "
+              f"fiber 1000/100 reaches {sh['fiber']['speed_1000_100']:.1%}, any technology {sh['any']['speed_1000_100']:.1%}",
+              file=sys.stderr)
     locs, brands, every, techs = load_locations(paths, counties, args.tech, provider_ids)
     if not locs:
         raise SystemExit("no matching locations - check --county / --tech / --provider-id filters")
@@ -413,6 +475,7 @@ def main() -> None:
         "technology": args.tech,
         "techs_seen": sorted(techs),
         "denominator": denominator,
+        "fcc_summary": fcc_summary,
         "locations_any_tech": len(every),
         "providers": providers,
         "locations": len(locs),
@@ -432,7 +495,7 @@ def main() -> None:
     legacy = out / "fiber_blocks.js"
     if legacy.exists():
         legacy.unlink()
-    print(json.dumps({k: v for k, v in meta.items() if k not in ("providers", "counties")}, indent=2))
+    print(json.dumps({k: v for k, v in meta.items() if k not in ("providers", "counties", "fcc_summary")}, indent=2))
     print(f"wrote {ov} ({ov.stat().st_size/1e6:.1f} MB) and {len(tiles)} block tiles in {blocks_out}/")
 
 

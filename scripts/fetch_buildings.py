@@ -3,7 +3,9 @@
 
 Sources (both public, no key):
   * DataSF "Building Footprints" (dataset ynuv-fyni) for San Francisco: LiDAR-derived,
-    with heights.
+    with heights.  Each footprint's parcel is joined to DataSF "Land Use" (dataset
+    fdfd-xptc: land-use class and residential unit count per parcel) to type the
+    building as residential / commercial / industrial / other.
   * Overture Maps buildings (theme=buildings) for the other counties, fetched with the
     `overturemaps` client for the region's bounding box.  Overture merges OpenStreetMap,
     Microsoft and Google footprints and carries a building type where known.
@@ -42,6 +44,11 @@ from shapely.geometry import shape
 from shapely.strtree import STRtree
 
 SODA = "https://data.sf.gov/resource/ynuv-fyni.geojson"
+SODA_PARCELS = "https://data.sf.gov/resource/ynuv-fyni.csv?$select=sf16_bldgid,mblr&$limit=400000"
+SODA_LANDUSE = "https://data.sf.gov/resource/fdfd-xptc.csv?$select=mapblklot,landuse,restype,resunits&$limit=400000"
+# DataSF land-use classes -> kind (1 residential, 2 commercial, 3 industrial, 4 other)
+LANDUSE_KIND = {"RESIDENT": 1, "MIXRES": 1, "MIXED": 1, "RETAIL/ENT": 2, "CIE": 2, "MIPS": 2, "MED": 2, "VISITOR": 2,
+                "PDR": 3, "VACANT": 4, "OPENSPACE": 4, "RIGHT OF WAY": 4, "PUBLIC": 4}
 PAGE = 50000
 Z = 14
 SCALE = 1_000_000            # coordinate units: 1e-6 degree (~0.1 m)
@@ -62,8 +69,49 @@ def tile_xy(lng: float, lat: float, z: int = Z) -> tuple[int, int]:
 
 # ---- sources -----------------------------------------------------------------
 
+def _download(session: requests.Session, url: str, dest: Path, what: str) -> None:
+    if dest.exists():
+        return
+    print(f"  downloading {what} ...", file=sys.stderr)
+    r = session.get(url, timeout=600)
+    r.raise_for_status()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(r.content)
+
+
+def datasf_kinds(session: requests.Session, raw_dir: Path) -> dict[str, int]:
+    """{sf16_bldgid: kind} from the footprint -> parcel -> land-use join."""
+    import csv
+    parcels_csv, landuse_csv = raw_dir / "sf_building_parcels.csv", raw_dir / "sf_landuse_2023.csv"
+    try:
+        _download(session, SODA_PARCELS, parcels_csv, "DataSF footprint parcel keys")
+        _download(session, SODA_LANDUSE, landuse_csv, "DataSF land use (2023)")
+    except Exception as exc:  # noqa: BLE001 - typing is optional
+        print(f"  DataSF land-use join skipped ({exc})", file=sys.stderr)
+        return {}
+    with landuse_csv.open(encoding="utf-8-sig", newline="") as fh:
+        landuse = {r["mapblklot"]: r for r in csv.DictReader(fh)}
+    kinds: dict[str, int] = {}
+    with parcels_csv.open(encoding="utf-8-sig", newline="") as fh:
+        for r in csv.DictReader(fh):
+            m = r["mblr"] or ""
+            p = landuse.get(m[2:] if m.startswith("SF") else m)
+            if not p:
+                continue
+            try:
+                units = float(p.get("resunits") or 0)
+            except ValueError:
+                units = 0.0
+            kind = 1 if units > 0 else LANDUSE_KIND.get((p.get("landuse") or "").strip().upper(), 0)
+            if kind:
+                kinds[r["sf16_bldgid"]] = kind
+    print(f"  DataSF land use: typed {len(kinds):,} buildings", file=sys.stderr)
+    return kinds
+
+
 def fetch_datasf(session: requests.Session, cache: Path):
     """Yield (geometry, height_m, kind) for San Francisco from DataSF."""
+    kinds = datasf_kinds(session, cache.parent)
     if not cache.exists():
         feats: list[dict] = []
         offset = 0
@@ -96,7 +144,7 @@ def fetch_datasf(session: requests.Session, cache: Path):
             h = float(f["properties"].get("hgt_median_m") or 0)
         except (TypeError, ValueError):
             h = 0.0
-        yield f["geometry"], h, 0
+        yield f["geometry"], h, kinds.get(str(f["properties"].get("sf16_bldgid") or ""), 0)
 
 
 def fetch_overture(cache: Path, bbox: str):

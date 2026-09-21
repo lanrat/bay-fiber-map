@@ -51,7 +51,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: site/data/buildings
-          key: buildings-${{ hashFiles('scripts/fetch_buildings.py', 'scripts/fetch_blocks.py') }}-v1
+          key: buildings-${{ hashFiles('scripts/fetch_buildings.py', 'scripts/fetch_blocks.py') }}-v2
 
       - name: Build building footprints
         if: steps.bldg-cache.outputs.cache-hit != 'true'

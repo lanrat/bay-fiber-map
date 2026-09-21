@@ -162,6 +162,7 @@
     <code>python scripts/fetch_fcc.py</code>), run <code>python scripts/build_map.py</code>, and reload.
   </div>
   <div class="tiles" id="tiles"></div>
+  <p class="note" id="fccRef"></p>
 
   <h2>ISPs <span class="links"><a id="ispMore"></a><a id="ispAll">all</a><a id="ispNone">none</a></span></h2>
   <ul class="list" id="isps"></ul>
@@ -182,6 +183,7 @@
   <ul class="list" id="legend" style="margin-top:6px"></ul>
   <div class="ctl"><input type="checkbox" id="showNone" checked><label for="showNone">Show areas with no match</label></div>
   <div class="ctl"><input type="checkbox" id="showBldg" checked><label for="showBldg">Show buildings when zoomed in</label></div>
+  <div class="ctl"><input type="checkbox" id="homesOnly" checked><label for="homesOnly">Only homes (hide buildings known to be non-residential)</label></div>
   <p class="note" id="bldgNote"></p>
 
   <form class="row" id="searchForm" autocomplete="off">
@@ -261,7 +263,7 @@
     + ' Footprints: DataSF for San Francisco, Overture Maps for the rest of the region.';
 
   // ---- filter state -------------------------------------------------------
-  const state = { isps: new Set(providers.map((_, i) => i)), minSpeed: 1000, biz: false, mode: 'speed', showNone: true, showBldg: true };
+  const state = { isps: new Set(providers.map((_, i) => i)), minSpeed: 1000, biz: false, mode: 'speed', showNone: true, showBldg: true, homesOnly: true };
   const MINOR = 500;   // ISPs with fewer residential locations are collapsed by default
   const minor = providers.filter(p => p.locations_res < MINOR).length;
   $('ispMore').textContent = minor ? `+${minor} more` : '';
@@ -284,24 +286,29 @@
   document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', (e) => { state.mode = e.target.value; refresh(); }));
   $('showNone').addEventListener('change', (e) => { state.showNone = e.target.checked; restyle(); });
   $('showBldg').addEventListener('change', (e) => { state.showBldg = e.target.checked; syncLayers(); });
+  $('homesOnly').addEventListener('change', (e) => { state.homesOnly = e.target.checked; restyleBuildings(); });
 
   // ---- per-feature evaluation (hexagons and blocks share the format) --------
   // p.c = [[res, [[ispIdx, down, up], ...], count], ...]; p.t = [residential total, business-only total]
   const speedTier = (best) => SPEED_TIERS.find(t => best >= t.min);
   const countTier = (n) => COUNT_TIERS.find(t => n >= t.min);
+  const fccTier = () => state.minSpeed >= 1000 ? 1000 : state.minSpeed >= 250 ? 250 : state.minSpeed >= 100 ? 100 : 25;   // the FCC summary's speed tiers
   function evalFeature(p, legend) {
     const per = new Map();       // ispIdx -> {n, nMatch, down, up}
-    let nAll = 0, nMatch = 0, best = 0, choice = 0;
+    let nAll = 0, nMatch = 0, best = 0, choice = 0, nAtTier = 0;
+    const tier = fccTier();
     const matched = new Set();
     for (const [res, provs, cnt] of p.c) {
       if (!res && !state.biz) continue;
       nAll += cnt;
-      let bestHere = 0, nHere = 0;
+      let bestHere = 0, nHere = 0, anyAtTier = false;
       for (const [i, down, up] of provs) {
         let e = per.get(i); if (!e) per.set(i, e = { n: 0, nMatch: 0, down: 0, up: 0 });
         e.n += cnt; e.down = Math.max(e.down, down); e.up = Math.max(e.up, up);
+        if (down >= tier) anyAtTier = true;
         if (state.isps.has(i) && down >= state.minSpeed) { nHere++; e.nMatch += cnt; matched.add(i); if (down > bestHere) bestHere = down; }
       }
+      if (anyAtTier) nAtTier += cnt;
       if (nHere) {
         nMatch += cnt; if (bestHere > best) best = bestHere; if (nHere >= 2) choice += cnt;
         if (legend) { const t = state.mode === 'speed' ? speedTier(bestHere) : countTier(nHere); if (t) legend[t.key] = (legend[t.key] || 0) + cnt; }
@@ -309,7 +316,7 @@
     }
     const nTotal = (p.t ? p.t[0] + (state.biz ? p.t[1] : 0) : nAll) || nAll;
     const cov = nMatch === 0 ? 'none' : nMatch >= nTotal ? 'full' : 'partial';
-    return { nAll, nMatch, best, nIsps: matched.size, per, nTotal, cov, choice };
+    return { nAll, nMatch, best, nIsps: matched.size, per, nTotal, cov, choice, nAtTier };
   }
   function tierOf(ev) {
     if (!ev.nMatch) return null;
@@ -318,25 +325,52 @@
   const evals = new Map();   // feature id (h3 cell or block GEOID) -> {ev, tier}
   let legendCounts = {};
   function recompute() {
-    let locMatch = 0, locAll = 0, locTotal = 0, choice = 0, hexMatch = 0;
+    let locMatch = 0, locAll = 0, locTotal = 0, choice = 0, hexMatch = 0, locAtTier = 0;
     const ispMatch = providers.map(() => 0);
     legendCounts = {};
     for (const f of hexes) {
       const ev = evalFeature(f.properties, legendCounts), tier = tierOf(ev);
       evals.set(f.properties.id, { ev, tier });
-      locMatch += ev.nMatch; locAll += ev.nAll; locTotal += ev.nTotal; choice += ev.choice;
+      locMatch += ev.nMatch; locAll += ev.nAll; locTotal += ev.nTotal; choice += ev.choice; locAtTier += ev.nAtTier;
       if (ev.nMatch) hexMatch++;
       for (const [i, e] of ev.per) if (e.down >= state.minSpeed) ispMatch[i] += e.n;
     }
     for (const f of hexes7) { const ev = evalFeature(f.properties); evals.set(f.properties.id, { ev, tier: tierOf(ev) }); }
     for (const p of loadedBlocks.values()) { const ev = evalFeature(p); evals.set(p.geoid, { ev, tier: tierOf(ev) }); }
     providers.forEach((_, i) => $('ispcnt-' + i).textContent = fmt(ispMatch[i]));
+    // Share of homes: the FCC summary knows the true share of residential units with fiber at the
+    // tier (any ISP); scale it by this map's share of those locations that the selected ISPs reach.
+    const s = meta.fcc_summary;
+    const key = { 1000: 'speed_1000_100', 250: 'speed_250_25', 100: 'speed_100_20', 25: 'speed_25_3' }[fccTier()];
+    const homes = s && s.share.fiber && locAtTier ? s.share.fiber[key] * locMatch / locAtTier : null;
+    const shareTile = homes != null
+      ? [pct(homes, 1), `of ${meta.region} homes, estimated (FCC county summary × this map's share of locations)`]
+      : denomAll
+        ? [pct(locMatch, locTotal), `of all ${fmt(locTotal)} serviceable locations in the ${meta.region}`]
+        : [pct(locMatch, locAll), `of the ${fmt(locAll)} locations that already have fiber from some ISP (not a share of all homes)`];
     $('tiles').innerHTML = [
       [fmt(locMatch), 'locations match the filters'],
-      [pct(locMatch, denomAll ? locTotal : locAll), `of the ${fmt(denomAll ? locTotal : locAll)} ${denomAll ? '' : 'fiber-served '}locations in the ${meta.region}`],
+      shareTile,
       [fmt(choice), 'of them can choose between 2+ matching ISPs'],
       [fmt(hexMatch) + ' / ' + fmt(hexes.length), 'hexagons (0.7 km²) with a match'],
     ].map(([v, l]) => `<div class="tile"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
+    renderReference(locMatch, locAll);
+  }
+  // The FCC's own summary (computed against the full location Fabric, any ISP) is the honest
+  // "share of homes" figure; the availability file alone only knows locations that have fiber.
+  function renderReference(locMatch, locAll) {
+    const s = meta.fcc_summary;
+    const el = $('fccRef');
+    if (!s) {
+      el.textContent = denomAll ? '' : 'The public fiber file lists only locations that already have fiber, so it cannot say what share of all homes that is. Adding the FCC summary-by-geography or a satellite availability file to data/raw/ fills that in.';
+      return;
+    }
+    const key = { 1000: 'speed_1000_100', 250: 'speed_250_25', 100: 'speed_100_20', 25: 'speed_25_3' }[fccTier()];
+    const label = { speed_1000_100: '1 Gbps / 100 Mbps', speed_250_25: '250 / 25 Mbps', speed_100_20: '100 / 20 Mbps', speed_25_3: '25 / 3 Mbps' }[key];
+    const fiber = s.share.fiber && s.share.fiber[key], any = s.share.any && s.share.any[key];
+    el.innerHTML = `The FCC's own summary (any ISP, full location census): fiber at ${label} or better reaches <b>${pct(fiber, 1)}</b> of the ${fmt(s.units_res)} residential units in these ${s.counties} counties; any technology ${pct(any, 1)}. ` +
+      `Your selection matches ${pct(locMatch, locAll)} of the ${fmt(locAll)} locations that have fiber from some ISP.` +
+      (state.minSpeed >= 10000 ? ' The FCC summary has no 10 Gbps tier, so the estimate scales its 1 Gbps figure.' : '');
   }
   function renderLegend() {
     const tiers = state.mode === 'speed' ? SPEED_TIERS : COUNT_TIERS;
@@ -457,7 +491,13 @@
   });
 
   // ---- building footprints (zoom 15+; delta-encoded chunks from scripts/fetch_buildings.py) ----
-  const bldgPolys = [];             // [polygon, geoid]
+  const bldgPolys = [];             // [polygon, geoid, kind, group]
+  function isHome(geoid, kind) {
+    if (kind >= 2) return false;                       // Overture says commercial / industrial / other
+    const p = loadedBlocks.get(geoid);
+    if (p && p.hu === 0 && p.t && p.t[0] === 0) return false;   // no housing units and no residential locations
+    return true;                                       // residential or unknown type
+  }
   function bldgStyle(geoid) {
     const e = evals.get(geoid);
     if (!e) return { fillColor: color('none'), fillOpacity: 0.15, color: color('none'), weight: 0.5, opacity: 0.4 };
@@ -479,18 +519,26 @@
         let x = x0, y = y0;
         for (let i = 0; i < deltas.length; i += 2) { x += deltas[i]; y += deltas[i + 1]; ring.push([y / 1e6, x / 1e6]); }
         const poly = L.polygon(ring, bldgStyle(geoid));
+        const isHomeNow = isHome(geoid, kind || 0);
         const about = [KINDS[kind || 0], h ? `height ≈ ${h} m` : ''].filter(Boolean).join(' · ');
         poly.bindTooltip(() => { const p = loadedBlocks.get(geoid); return (p ? detailHtml(p, poly.getBounds().getCenter(), 'block') : '') + (about ? `<div class="tip"><div class="sum">${about}</div></div>` : ''); },
           { sticky: true, className: 'blk', opacity: 1, direction: 'top', offset: [0, -8] });
         poly.on('click', (e) => { const p = loadedBlocks.get(geoid); if (p) L.popup({ maxWidth: 340 }).setLatLng(e.latlng).setContent(detailHtml(p, e.latlng, 'block')).openOn(map); });
-        bldgPolys.push([poly, geoid]);
-        group.addLayer(poly);
+        bldgPolys.push([poly, geoid, kind || 0, group]);
+        if (!state.homesOnly || isHomeNow) group.addLayer(poly);
       }
       return group;
     },
     noteOnMissing: () => { $('bldgNote').textContent = 'Building footprints are not built (run scripts/fetch_buildings.py).'; },
   });
-  function restyleBuildings() { for (const [poly, geoid] of bldgPolys) poly.setStyle(bldgStyle(geoid)); }
+  function restyleBuildings() {
+    for (const [poly, geoid, kind, group] of bldgPolys) {
+      const show = !state.homesOnly || isHome(geoid, kind);
+      if (show && !group.hasLayer(poly)) group.addLayer(poly);
+      else if (!show && group.hasLayer(poly)) group.removeLayer(poly);
+      if (show) poly.setStyle(bldgStyle(geoid));
+    }
+  }
 
   // ---- which layer shows at which zoom ------------------------------------------------
   function syncLayers() {

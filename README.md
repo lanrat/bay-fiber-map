@@ -34,8 +34,12 @@ locations for the current filters:
 * **Minimum advertised download** - any / 1 / 2 / 5 / 10 Gbps. Default 1 Gbps.
 * **Include business-only locations** - off by default, so the map is about homes.
   Some ISPs (Zayo, Cogent, Vast, most of Xfinity's fiber) only file business locations.
-* **Color blocks by** *fastest speed* (10 Gbps+, 5-10, 1-5, under 1) or
-  *number of ISPs* meeting the filters (1, 2, 3+), i.e. how much choice a block has.
+* **Color by** *fastest speed* (10 Gbps+, 5-10, 1-5, under 1) or *number of
+  ISPs* meeting the filters (1, 2, 3+), i.e. how much choice an area has.
+* **Only homes** (on by default) hides buildings known to be non-residential:
+  typed commercial, industrial or other by Overture or by San Francisco's
+  land-use parcels, or sitting in a block with no housing units and no
+  residential FCC locations. Buildings of unknown type stay visible.
 
 Hover or click an area for every ISP present, its serviceable locations and
 maximum advertised speeds, whether the selected ISPs reach **all** or only
@@ -50,6 +54,23 @@ in San Francisco and [Overture Maps](https://overturemaps.org/) elsewhere (about
 each painted with its block's status: solid where the selected ISPs reach every
 location in the block, faded with a dashed outline where they reach only some
 (the FCC data does not say which buildings), gray where none match.
+
+### What the summary numbers mean
+
+The public fiber file lists only locations that already have fiber from some
+ISP, so on its own it cannot say what share of *all* homes that is (with every
+ISP selected it would always read 100%). Two things fix that:
+
+* the FCC's **Fixed Broadband Summary by Geography** file, whose county rows
+  give the share of residential units that can get each speed by technology,
+  computed by the FCC against its full location census. Drop it in `data/raw/`
+  (its name contains `summary_by_geography`) and the build exposes it as
+  `meta.fcc_summary`; the page then shows an **estimated share of homes** for
+  the current filters: the FCC's fiber share at the nearest speed tier, scaled
+  by the fraction of those fiber locations that the selected ISPs reach. It is
+  an estimate because the FCC counts units and the map counts locations.
+* a satellite (or cable) availability file, which supplies the true number of
+  locations per block and hexagon (see below).
 
 The summary tiles are exact distinct-location counts for the whole region, not
 sums per ISP: the build stores, per hexagon and per block, how many locations

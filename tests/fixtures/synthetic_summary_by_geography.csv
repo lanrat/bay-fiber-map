@@ -1,0 +1,8 @@
+area_data_type,geography_type,geography_id,geography_desc,geography_desc_full,total_units,biz_res,technology,speed_02_02,speed_10_1,speed_25_3,speed_100_20,speed_250_25,speed_1000_100
+Total,County,06075,San Francisco County,"San Francisco County, CA",1000,R,Any Technology,1,1,1,1,0.99,0.8
+Total,County,06075,San Francisco County,"San Francisco County, CA",1000,R,Fiber to the Premises,0.6,0.6,0.6,0.6,0.6,0.5
+Total,County,06001,Alameda County,"Alameda County, CA",3000,R,Fiber to the Premises,0.3,0.3,0.3,0.3,0.3,0.3
+Total,County,06001,Alameda County,"Alameda County, CA",3000,R,Any Technology,1,1,1,1,1,0.9
+Total,County,06075,San Francisco County,"San Francisco County, CA",1000,B,Fiber to the Premises,0.9,0.9,0.9,0.9,0.9,0.9
+Urban,County,06075,San Francisco County,"San Francisco County, CA",900,R,Fiber to the Premises,0.7,0.7,0.7,0.7,0.7,0.7
+Total,Census Place,0667000,San Francisco,"San Francisco, CA",1000,R,Fiber to the Premises,0.9,0.9,0.9,0.9,0.9,0.9
