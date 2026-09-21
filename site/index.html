@@ -252,13 +252,13 @@
   $('sub').textContent = `FCC Broadband Data Collection, fiber-to-the-premises availability as of ${meta.as_of} · ${Object.keys(meta.counties).length} counties`;
   $('foot').innerHTML =
     `Source: FCC National Broadband Map availability data filed by each ISP (${meta.source_files.join(', ')}); ` +
-    `US Census TIGERweb 2020 blocks; DataSF building footprints. Built ${meta.generated}. Per-home coordinates are not in the public FCC files, ` +
+    `US Census TIGERweb 2020 blocks; building footprints from DataSF (San Francisco) and <a href="https://overturemaps.org/" target="_blank" rel="noopener">Overture Maps</a> (ODbL). Built ${meta.generated}. Per-home coordinates are not in the public FCC files, ` +
     `so an area is colored by the best match among its locations; counts are FCC “serviceable locations” (roughly buildings), not housing units.`;
   const denomAll = meta.denominator === 'all';   // true when a satellite/cable file supplied every location
   $('bldgNote').textContent = (denomAll
     ? 'Zoom in for census blocks, then buildings. Solid buildings sit in blocks where the selected ISPs reach every location; faded ones in blocks they reach only partly.'
     : 'Zoom in for census blocks, then buildings. Solid buildings sit in blocks where the selected ISPs reach every fiber-served location; faded ones where they reach only some. Totals count fiber-served locations only, so blocks with unserved homes can look complete.')
-    + ' Buildings are available in San Francisco.';
+    + ' Footprints: DataSF for San Francisco, Overture Maps for the rest of the region.';
 
   // ---- filter state -------------------------------------------------------
   const state = { isps: new Set(providers.map((_, i) => i)), minSpeed: 1000, biz: false, mode: 'speed', showNone: true, showBldg: true };
@@ -472,13 +472,15 @@
     pad: 0,
     build: (d) => {
       const group = L.layerGroup();
-      for (const [gi, h, x0, y0, deltas] of d.b) {
+      const KINDS = ['', 'Residential building', 'Commercial building', 'Industrial building', 'Building (other use)'];
+      for (const [gi, h, x0, y0, deltas, kind] of d.b) {
         const geoid = d.g[gi];
         const ring = [[y0 / 1e6, x0 / 1e6]];
         let x = x0, y = y0;
         for (let i = 0; i < deltas.length; i += 2) { x += deltas[i]; y += deltas[i + 1]; ring.push([y / 1e6, x / 1e6]); }
         const poly = L.polygon(ring, bldgStyle(geoid));
-        poly.bindTooltip(() => { const p = loadedBlocks.get(geoid); return (p ? detailHtml(p, poly.getBounds().getCenter(), 'block') : '') + (h ? `<div class="tip"><div class="sum">Building height ≈ ${h} m</div></div>` : ''); },
+        const about = [KINDS[kind || 0], h ? `height ≈ ${h} m` : ''].filter(Boolean).join(' · ');
+        poly.bindTooltip(() => { const p = loadedBlocks.get(geoid); return (p ? detailHtml(p, poly.getBounds().getCenter(), 'block') : '') + (about ? `<div class="tip"><div class="sum">${about}</div></div>` : ''); },
           { sticky: true, className: 'blk', opacity: 1, direction: 'top', offset: [0, -8] });
         poly.on('click', (e) => { const p = loadedBlocks.get(geoid); if (p) L.popup({ maxWidth: 340 }).setLatLng(e.latlng).setContent(detailHtml(p, e.latlng, 'block')).openOn(map); });
         bldgPolys.push([poly, geoid]);

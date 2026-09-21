@@ -43,8 +43,25 @@ jobs:
           python scripts/fetch_blocks.py
           python scripts/build_map.py
 
+      # Building footprints are not committed (about 200 MB). They are generated here
+      # from DataSF (San Francisco) and Overture Maps (other counties) and cached; bump
+      # the key's version suffix to force a rebuild.
+      - name: Restore cached building footprints
+        id: bldg-cache
+        uses: actions/cache@v4
+        with:
+          path: site/data/buildings
+          key: buildings-${{ hashFiles('scripts/fetch_buildings.py', 'scripts/fetch_blocks.py') }}-v1
+
+      - name: Build building footprints
+        if: steps.bldg-cache.outputs.cache-hit != 'true'
+        run: |
+          pip install overturemaps
+          python scripts/fetch_blocks.py
+          python scripts/fetch_buildings.py
+
       - name: Check the site has data
-        run: test -s site/data/overview.js && test -s site/data/blocks/index.json
+        run: test -s site/data/overview.js && test -s site/data/blocks/index.json && test -s site/data/buildings/index.json
 
       - uses: actions/upload-pages-artifact@v3
         with:

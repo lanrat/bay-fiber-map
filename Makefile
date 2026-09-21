@@ -14,7 +14,7 @@ fetch:                     ## Sonic's CA fiber availability file (needs FCC_USER
 build:                     ## join FCC rows to hexagons + blocks -> site/data/overview.js, site/data/blocks/
 	$(PY) scripts/build_map.py $(BUILD_ARGS)
 
-buildings:                 ## DataSF building footprints -> site/data/buildings/ (needs shapely)
+buildings:                 ## building footprints (DataSF + Overture Maps) -> site/data/buildings/ (needs shapely, overturemaps)
 	$(PY) scripts/fetch_buildings.py
 
 serve:                     ## open http://localhost:$(PORT)

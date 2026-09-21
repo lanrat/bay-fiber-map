@@ -8,17 +8,18 @@ availability data behind the [National Broadband Map](https://broadbandmap.fcc.g
 
 Three levels of detail, chosen by zoom: **H3 hexagons** (0.7 km², the whole
 region, exact statistics), **2020 census blocks** (zoom 13+), and **building
-footprints** (zoom 15+, San Francisco so far).
+footprints** (zoom 15+, the whole region).
 
 ```
 make blocks      # 1. census block boundaries, nine counties (Census TIGERweb, no key)
 make fetch       # 2. FCC availability file for California (see "Getting the FCC data")
 make build       # 3. join -> site/data/overview.js + site/data/blocks/ tiles
-make buildings   # 4. building footprints (DataSF, San Francisco) -> site/data/buildings/
+make buildings   # 4. building footprints (DataSF + Overture Maps) -> site/data/buildings/
 make serve       # 5. open http://localhost:8000/
 ```
 
-Python 3.9+ with `requests`, `h3` and `shapely` (`pip install -r requirements.txt`).
+Python 3.9+ with `requests`, `h3`, `shapely` and `overturemaps`
+(`pip install -r requirements.txt`).
 The map page itself is plain HTML + [Leaflet](https://leafletjs.com/) (vendored
 in `site/vendor/`); it needs internet access only for the OpenStreetMap basemap tiles
 and the optional address search.
@@ -43,7 +44,9 @@ and a link that opens the same spot on the FCC map, where the FCC shows its
 per-address dots. "Table view" lists matching hexagons; "Download CSV" exports
 every hexagon with per-ISP columns.
 
-**Zoomed in (zoom 15+) the map switches to building footprints** from DataSF,
+**Zoomed in (zoom 15+) the map switches to building footprints**, from DataSF
+in San Francisco and [Overture Maps](https://overturemaps.org/) elsewhere (about
+2.5 million buildings; Overture also gives a building type for some of them),
 each painted with its block's status: solid where the selected ISPs reach every
 location in the block, faded with a dashed outline where they reach only some
 (the FCC data does not say which buildings), gray where none match.
@@ -120,11 +123,16 @@ label the vintage.
 
 `.github/workflows/pages.yml` runs the tests and publishes `site/` to GitHub
 Pages on every push to the default branch (other branches only build and test).
-The built `site/data/` (about 60 MB: hexagon overview, block tiles, SF
-buildings) is committed, so the deploy needs nothing from the FCC; to refresh
-the data either rebuild locally and commit, or set the repository variable
+The FCC-derived `site/data/overview.js` and `site/data/blocks/` (about 60 MB)
+are committed, so that part of the deploy needs nothing from the FCC; to
+refresh them either rebuild locally and commit, or set the repository variable
 `FCC_DATA_URL` to a URL of the FCC California fiber zip and the workflow
 re-fetches the census blocks and rebuilds on each deploy.
+
+Building footprints (about 200 MB) are **not** committed: the workflow builds
+them from DataSF and Overture Maps on the first deploy (15 to 20 minutes) and
+caches the result under a key derived from the scripts, so later deploys reuse
+it. Bump the `-v1` suffix in the workflow's cache key to force a refresh.
 
 One-time setup: in the repository *Settings -> Pages*, set **Source** to
 **GitHub Actions** (the workflow also tries to enable this itself). The map is
@@ -136,12 +144,12 @@ then served at `https://<user>.github.io/<repo>/`.
 scripts/fetch_blocks.py   Census TIGERweb -> data/blocks/06<county>.geojson (SF committed for tests)
 scripts/fetch_fcc.py      FCC BDC download (API or website mode) -> data/raw/
 scripts/build_map.py      join + aggregation -> site/data/overview.js (hexagons) + site/data/blocks/12_x_y.json
-scripts/fetch_buildings.py DataSF footprints -> site/data/buildings/14_x_y.json (tiled, 14 MB)
+scripts/fetch_buildings.py DataSF + Overture footprints -> site/data/buildings/14_x_y.json (tiled, not committed)
 site/index.html           the map (Leaflet, no build step)
 tests/                    unit tests on a small SYNTHETIC fixture (`make test`)
 ```
 
-`data/raw/` and `data/blocks/` (except SF) are git-ignored; `site/data/` is committed (see above).
+`data/raw/`, `data/blocks/` (except SF) and `site/data/buildings/` are git-ignored (see above).
 
 ## Sources
 
@@ -150,4 +158,5 @@ tests/                    unit tests on a small SYNTHETIC fixture (`make test`)
   [Public Data API spec](https://www.fcc.gov/sites/default/files/bdc-public-data-api-spec.pdf).
 * U.S. Census Bureau, [TIGERweb](https://tigerweb.geo.census.gov/) 2020 census blocks.
 * DataSF, [Building Footprints](https://data.sf.gov/d/ynuv-fyni) (City and County of San Francisco).
+* [Overture Maps Foundation](https://overturemaps.org/), buildings theme, release 2026-08-19 (ODbL).
 * Basemap tiles © OpenStreetMap contributors. Address search: OSM Nominatim.

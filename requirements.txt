@@ -1,3 +1,4 @@
 requests>=2.31
 h3>=4.0
 shapely>=2.0
+overturemaps>=0.6
