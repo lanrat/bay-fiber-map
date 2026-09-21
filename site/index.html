@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SF Fiber Map</title>
+<link rel="stylesheet" href="vendor/leaflet.css">
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb; --plane: #f9f9f7;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --hair: #e1e0d9; --border: rgba(11,11,11,.10);
+    --accent: #2a78d6;
+    /* one-hue ordinal ramps validated for the light surface (darkest = most) */
+    --s4: #0d366b; --s3: #1c5cab; --s2: #3987e5; --s1: #86b6ef;   /* speed: 10G+, 5G+, 1G+, <1G */
+    --k3: #0d366b; --k2: #2a78d6; --k1: #86b6ef;                  /* ISP count: 3+, 2, 1 */
+    --none: #b8b6ae;
+    --shadow: 0 2px 10px rgba(0,0,0,.12);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #1a1a19; --plane: #0d0d0d;
+      --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --hair: #2c2c2a; --border: rgba(255,255,255,.10);
+      --accent: #3987e5;
+      /* same hue stepped for the dark surface (lightest = most) */
+      --s4: #b7d3f6; --s3: #6da7ec; --s2: #2a78d6; --s1: #184f95;
+      --k3: #b7d3f6; --k2: #5598e7; --k1: #1c5cab;
+      --none: #4a4a47;
+      --shadow: 0 2px 12px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19; --plane: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --hair: #2c2c2a; --border: rgba(255,255,255,.10);
+    --accent: #3987e5;
+    --s4: #b7d3f6; --s3: #6da7ec; --s2: #2a78d6; --s1: #184f95;
+    --k3: #b7d3f6; --k2: #5598e7; --k1: #1c5cab;
+    --none: #4a4a47;
+    --shadow: 0 2px 12px rgba(0,0,0,.5);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--plane); }
+  #map { position: absolute; inset: 0; background: var(--plane); }
+  /* OpenStreetMap tiles are colourful; flatten them so the choropleth reads. */
+  .leaflet-tile-pane { filter: grayscale(1) contrast(.85) brightness(1.06) opacity(.8); }
+  :root[data-theme="dark"] .leaflet-tile-pane { filter: invert(1) grayscale(1) brightness(.75) contrast(1.15); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .leaflet-tile-pane { filter: invert(1) grayscale(1) brightness(.75) contrast(1.15); }
+  }
+
+  .panel {
+    position: absolute; top: 12px; left: 12px; z-index: 1000;
+    width: 350px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px);
+    overflow: auto; background: var(--surface); color: var(--ink);
+    border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow);
+    padding: 14px 16px 12px;
+  }
+  .panel h1 { font-size: 17px; margin: 0 0 2px; font-weight: 650; letter-spacing: -.01em; }
+  .panel .sub { color: var(--ink-2); font-size: 12px; margin: 0 0 10px; }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+  .tile { border: 1px solid var(--hair); border-radius: 8px; padding: 8px 10px; background: var(--surface); }
+  .tile .v { font-size: 21px; font-weight: 650; line-height: 1.1; }
+  .tile .l { font-size: 11px; color: var(--ink-2); margin-top: 2px; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 12px 0 4px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  h2 .links { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }
+  h2 .links a { color: var(--ink-2); text-decoration: none; margin-left: 8px; cursor: pointer; }
+  h2 .links a:hover { text-decoration: underline; }
+  .list { margin: 0; padding: 0; list-style: none; }
+  .list li { display: flex; align-items: center; gap: 8px; padding: 3px 0; border-top: 1px solid var(--hair); }
+  .list li:first-child { border-top: 0; }
+  .list li.minor { display: none; }
+  .list.expanded li.minor { display: flex; }
+  .list input { margin: 0; accent-color: var(--accent); }
+  .sw { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border); flex: none; }
+  .list .lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list .cnt { color: var(--ink-2); font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; }
+  .ctl { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .ctl label { flex: 1; }
+  .ctl select { padding: 5px 8px; border: 1px solid var(--hair); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; }
+  .seg { display: inline-flex; border: 1px solid var(--hair); border-radius: 6px; overflow: hidden; }
+  .seg label { padding: 4px 9px; cursor: pointer; font-size: 12px; color: var(--ink-2); }
+  .seg input { position: absolute; opacity: 0; }
+  .seg input:checked + label { background: var(--accent); color: #fff; }
+  .row { display: flex; gap: 6px; margin-top: 8px; }
+  input[type=search] { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--hair); border-radius: 6px;
+    background: var(--surface); color: var(--ink); font: inherit; }
+  button { padding: 7px 10px; border: 1px solid var(--hair); border-radius: 6px; background: var(--surface);
+    color: var(--ink); font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  .foot { color: var(--muted); font-size: 11px; margin: 10px 0 0; }
+  .foot a { color: inherit; }
+  .msg { color: var(--ink-2); font-size: 12px; min-height: 1em; margin-top: 4px; }
+  .banner { margin: 10px 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--hair); background: var(--plane); font-size: 13px; }
+  .banner code { font-size: 12px; }
+
+  /* tooltip / popup */
+  .leaflet-tooltip.blk, .leaflet-popup-content-wrapper {
+    background: var(--surface); color: var(--ink); border: 1px solid var(--border); box-shadow: var(--shadow);
+    border-radius: 8px; font: 13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .leaflet-popup-content { margin: 10px 14px; }
+  .leaflet-popup-tip { background: var(--surface); }
+  .leaflet-tooltip.blk::before { display: none; }
+  .tip .hd { display: flex; align-items: center; gap: 6px; font-weight: 650; }
+  .tip .hd .sw { width: 10px; height: 10px; }
+  .tip .id { color: var(--ink-2); font-size: 12px; }
+  .tip table { border-collapse: collapse; margin-top: 5px; }
+  .tip th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11px; padding: 3px 10px 1px 0; }
+  .tip td { padding: 1px 10px 1px 0; color: var(--ink-2); white-space: nowrap; }
+  .tip td.n { text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tip tr.off td { opacity: .5; }
+  .tip .sum { margin-top: 5px; color: var(--ink-2); font-size: 12px; }
+  .leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
+  .leaflet-control-attribution { background: var(--surface) !important; color: var(--ink-2) !important; }
+  .leaflet-control-attribution a { color: var(--ink-2) !important; }
+  .leaflet-bar a { background: var(--surface) !important; color: var(--ink) !important; border-color: var(--border) !important; }
+
+  /* table view */
+  .modal { position: absolute; inset: 0; z-index: 2000; background: rgba(0,0,0,.35); display: none; align-items: center; justify-content: center; }
+  .modal.open { display: flex; }
+  .modal .card { background: var(--surface); color: var(--ink); border-radius: 10px; width: min(960px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px); display: flex; flex-direction: column; box-shadow: var(--shadow); }
+  .modal .hd { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--hair); }
+  .modal .hd h3 { font-size: 15px; margin: 0; flex: 1; }
+  .modal .bd { overflow: auto; padding: 0 16px 12px; }
+  table.data { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table.data th, table.data td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--hair); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table.data th:first-child, table.data td:first-child, table.data th:nth-child(2), table.data td:nth-child(2) { text-align: left; }
+  table.data th { position: sticky; top: 0; background: var(--surface); color: var(--ink-2); font-weight: 600; }
+  table.data tr:hover td { background: var(--plane); cursor: pointer; }
+
+  @media (max-width: 560px) {
+    .panel { top: auto; bottom: 0; left: 0; right: 0; width: auto; max-width: none; max-height: 52vh; border-radius: 12px 12px 0 0; }
+    .tile .v { font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+<div id="map" role="application" aria-label="Map of San Francisco census blocks colored by fiber internet availability"></div>
+
+<section class="panel" aria-label="Filters, legend and summary">
+  <h1>Fiber internet in San Francisco</h1>
+  <p class="sub" id="sub">Loading…</p>
+  <div id="nodata" class="banner" hidden>
+    No map data yet. Put the FCC availability file in <code>data/raw/</code> (or run
+    <code>python scripts/fetch_fcc.py</code>), run <code>python scripts/build_map.py</code>, and reload.
+  </div>
+  <div class="tiles" id="tiles"></div>
+
+  <h2>ISPs <span class="links"><a id="ispMore"></a><a id="ispAll">all</a><a id="ispNone">none</a></span></h2>
+  <ul class="list" id="isps"></ul>
+
+  <h2>Speed</h2>
+  <div class="ctl"><label for="minSpeed">Minimum advertised download</label>
+    <select id="minSpeed">
+      <option value="0">any</option><option value="1000" selected>1 Gbps+</option><option value="2000">2 Gbps+</option>
+      <option value="5000">5 Gbps+</option><option value="10000">10 Gbps+</option>
+    </select></div>
+  <div class="ctl"><input type="checkbox" id="biz"><label for="biz">Include business-only locations</label></div>
+
+  <h2>Color blocks by</h2>
+  <div class="seg" role="radiogroup">
+    <input type="radio" name="mode" id="modeSpeed" value="speed" checked><label for="modeSpeed">Fastest speed</label>
+    <input type="radio" name="mode" id="modeCount" value="count"><label for="modeCount">Number of ISPs</label>
+  </div>
+  <ul class="list" id="legend" style="margin-top:6px"></ul>
+  <div class="ctl"><input type="checkbox" id="showNone" checked><label for="showNone">Show blocks with no match</label></div>
+
+  <form class="row" id="searchForm" autocomplete="off">
+    <input type="search" id="q" placeholder="Jump to an address in SF…" aria-label="Address search">
+    <button type="submit">Go</button>
+  </form>
+  <div class="msg" id="msg" aria-live="polite"></div>
+  <div class="row">
+    <button type="button" id="btnTable">Table view</button>
+    <button type="button" id="btnCsv">Download CSV</button>
+    <button type="button" id="btnTheme" title="Toggle light/dark">◐</button>
+  </div>
+  <p class="foot" id="foot"></p>
+</section>
+
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="card">
+    <div class="hd"><h3 id="modalTitle">Census blocks matching the current filters</h3><span class="msg" id="modalNote"></span><button type="button" id="btnClose">Close</button></div>
+    <div class="bd"><table class="data" id="dataTable"></table></div>
+  </div>
+</div>
+
+<script src="vendor/leaflet.js"></script>
+<script src="data/fiber_blocks.js"></script>
+<script>
+(function () {
+  const SPEED_TIERS = [   // ordered fastest first; key -> CSS var
+    { key: 's4', min: 10000, label: '10 Gbps or more' },
+    { key: 's3', min: 5000,  label: '5 to 10 Gbps' },
+    { key: 's2', min: 1000,  label: '1 to 5 Gbps' },
+    { key: 's1', min: 1,     label: 'Under 1 Gbps' },
+  ];
+  const COUNT_TIERS = [
+    { key: 'k3', min: 3, label: '3 or more ISPs' },
+    { key: 'k2', min: 2, label: '2 ISPs' },
+    { key: 'k1', min: 1, label: '1 ISP' },
+  ];
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const color = (key) => css('--' + key);
+  const fmt = (n) => (n == null ? '–' : Number(n).toLocaleString());
+  const pct = (a, b) => (b ? Math.round(100 * a / b) + '%' : '–');
+  const speed = (m) => (m >= 1000 ? (m / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' Gbps' : m + ' Mbps');
+  const isDark = () => document.documentElement.dataset.theme === 'dark' ||
+    (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
+  const $ = (id) => document.getElementById(id);
+
+  const map = L.map('map', { preferCanvas: true, zoomControl: false }).setView([37.7599, -122.4416], 12.5);
+  L.control.zoom({ position: 'topright' }).addTo(map);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(map);
+  function setBase() { /* theme handled by the CSS filter on .leaflet-tile-pane */ }
+
+  const data = window.FIBER_DATA;
+  if (!data) {
+    $('sub').textContent = 'No data file found (site/data/fiber_blocks.js).';
+    $('nodata').hidden = false;
+    setBase();
+    return;
+  }
+  const meta = data.meta, feats = data.blocks.features, providers = meta.providers;
+  $('sub').textContent = `FCC Broadband Data Collection, fiber-to-the-premises availability as of ${meta.as_of}, by 2020 census block`;
+  $('foot').innerHTML =
+    `Source: FCC National Broadband Map availability data filed by each ISP (${meta.source_files.join(', ')}); ` +
+    `US Census TIGERweb 2020 blocks. Built ${meta.generated}. Per-home coordinates are not in the public FCC files, ` +
+    `so a block is colored by the best match among its locations; counts are FCC “serviceable locations” (roughly buildings), not housing units.`;
+
+  // ---- filter state -------------------------------------------------------
+  const state = { isps: new Set(providers.map((_, i) => i)), minSpeed: 1000, biz: false, mode: 'speed', showNone: true };
+  const MINOR = 10;   // ISPs with fewer residential locations are collapsed by default
+  const minor = providers.filter(p => p.locations_res < MINOR).length;
+  $('ispMore').textContent = minor ? `+${minor} more` : '';
+  $('ispMore').addEventListener('click', () => {
+    const open = $('isps').classList.toggle('expanded');
+    $('ispMore').textContent = open ? 'fewer' : `+${minor} more`;
+  });
+  $('isps').innerHTML = providers.map((p, i) => `
+    <li class="${p.locations_res < MINOR ? 'minor' : ''}"><input type="checkbox" id="isp-${i}" data-i="${i}" checked>
+      <label class="lbl" for="isp-${i}" title="${p.brand} (FCC provider ${p.id})">${p.name}</label>
+      <span class="cnt" id="ispcnt-${i}"></span></li>`).join('');
+  $('isps').addEventListener('change', (e) => {
+    const i = +e.target.dataset.i; if (Number.isNaN(i)) return;
+    e.target.checked ? state.isps.add(i) : state.isps.delete(i); refresh();
+  });
+  $('ispAll').addEventListener('click', () => { providers.forEach((_, i) => { state.isps.add(i); $('isp-' + i).checked = true; }); refresh(); });
+  $('ispNone').addEventListener('click', () => { state.isps.clear(); providers.forEach((_, i) => $('isp-' + i).checked = false); refresh(); });
+  $('minSpeed').addEventListener('change', (e) => { state.minSpeed = +e.target.value; refresh(); });
+  $('biz').addEventListener('change', (e) => { state.biz = e.target.checked; refresh(); });
+  document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', (e) => { state.mode = e.target.value; refresh(); }));
+  $('showNone').addEventListener('change', (e) => { state.showNone = e.target.checked; restyle(); });
+
+  // ---- per-block evaluation ------------------------------------------------
+  // p.c = [[res, [[ispIdx, down, up], ...], count], ...]  (see scripts/build_map.py)
+  function evalBlock(p) {
+    const per = new Map();       // ispIdx -> {n, nMatch, down, up}
+    let nAll = 0, nMatch = 0, best = 0;
+    const matched = new Set();
+    for (const [res, provs, cnt] of p.c) {
+      if (!res && !state.biz) continue;
+      nAll += cnt;
+      let hit = false;
+      for (const [i, down, up] of provs) {
+        let e = per.get(i); if (!e) per.set(i, e = { n: 0, nMatch: 0, down: 0, up: 0 });
+        e.n += cnt; e.down = Math.max(e.down, down); e.up = Math.max(e.up, up);
+        if (state.isps.has(i) && down >= state.minSpeed) { hit = true; e.nMatch += cnt; matched.add(i); if (down > best) best = down; }
+      }
+      if (hit) nMatch += cnt;
+    }
+    return { nAll, nMatch, best, nIsps: matched.size, per };
+  }
+  function tierOf(ev) {
+    if (!ev.nMatch) return null;
+    if (state.mode === 'speed') return SPEED_TIERS.find(t => ev.best >= t.min) || null;
+    return COUNT_TIERS.find(t => ev.nIsps >= t.min) || null;
+  }
+  const evals = new Map();   // geoid -> {ev, tier}
+  function recompute() {
+    let locMatch = 0, locAll = 0, blocks = 0, hu = 0;
+    const ispMatch = providers.map(() => 0);
+    for (const f of feats) {
+      const ev = evalBlock(f.properties), tier = tierOf(ev);
+      evals.set(f.properties.geoid, { ev, tier });
+      locMatch += ev.nMatch; locAll += ev.nAll;
+      if (ev.nMatch) { blocks++; hu += f.properties.hu; }
+      for (const [i, e] of ev.per) if (e.down >= state.minSpeed) ispMatch[i] += e.n;
+    }
+    providers.forEach((_, i) => $('ispcnt-' + i).textContent = fmt(ispMatch[i]));
+    $('tiles').innerHTML = [
+      [fmt(locMatch), 'locations match the filters'],
+      [pct(locMatch, locAll), `of the ${fmt(locAll)} fiber-served locations in SF`],
+      [fmt(blocks) + ' / ' + fmt(feats.length), 'census blocks with a match'],
+      [pct(hu, meta.housing_units_total), 'of SF housing units are in those blocks'],
+    ].map(([v, l]) => `<div class="tile"><div class="v">${v}</div><div class="l">${l}</div></div>`).join('');
+  }
+  function renderLegend() {
+    const tiers = state.mode === 'speed' ? SPEED_TIERS : COUNT_TIERS;
+    const counts = {};
+    for (const { tier } of evals.values()) if (tier) counts[tier.key] = (counts[tier.key] || 0) + 1;
+    const none = feats.length - Object.values(counts).reduce((a, b) => a + b, 0);
+    $('legend').innerHTML = tiers.map(t => `<li><span class="sw" style="background:${color(t.key)}"></span><span class="lbl">${t.label}</span><span class="cnt">${fmt(counts[t.key] || 0)} blocks</span></li>`).join('') +
+      `<li><span class="sw" style="background:${color('none')};opacity:.6"></span><span class="lbl">No match</span><span class="cnt">${fmt(none)} blocks</span></li>`;
+  }
+
+  // ---- map layer ----------------------------------------------------------
+  function styleFor(p) {
+    const { tier } = evals.get(p.geoid);
+    if (!tier) return { fillColor: color('none'), fillOpacity: state.showNone ? 0.22 : 0, color: color('none'), weight: state.showNone ? 0.4 : 0, opacity: state.showNone ? 0.5 : 0 };
+    return { fillColor: color(tier.key), fillOpacity: 0.7, color: css('--surface'), weight: 0.6, opacity: 0.9 };
+  }
+  function detailHtml(p) {
+    const { ev, tier } = evals.get(p.geoid);
+    const head = tier
+      ? `<span class="sw" style="background:${color(tier.key)}"></span>${state.mode === 'speed' ? 'Up to ' + speed(ev.best) : ev.nIsps + (ev.nIsps === 1 ? ' ISP' : ' ISPs')} · ${fmt(ev.nMatch)} matching location${ev.nMatch === 1 ? '' : 's'}`
+      : `<span class="sw" style="background:${color('none')}"></span>${ev.nAll ? 'No ISP matches the filters' : 'No fiber reported'}`;
+    const rows = [...ev.per.entries()].sort((a, b) => b[1].n - a[1].n).map(([i, e]) =>
+      `<tr class="${e.nMatch ? '' : 'off'}"><td>${providers[i].name}</td><td class="n">${fmt(e.n)}</td><td class="n">${speed(e.down)} ↓ ${speed(e.up)} ↑</td></tr>`).join('');
+    return `<div class="tip"><div class="hd">${head}</div><div class="id">Block ${p.geoid}</div>` +
+      (rows ? `<table><tr><th>ISP</th><th style="text-align:right">Locations</th><th>Max advertised</th></tr>${rows}</table>` : '') +
+      `<div class="sum">${fmt(ev.nAll)} fiber-served location${ev.nAll === 1 ? '' : 's'} · ${fmt(p.hu)} housing units · ${fmt(p.pop)} residents (2020)</div></div>`;
+  }
+  recompute();
+  let hovered = null;
+  const layer = L.geoJSON(data.blocks, {
+    style: f => styleFor(f.properties),
+    onEachFeature: (f, l) => {
+      l.bindTooltip(() => detailHtml(f.properties), { sticky: true, className: 'blk', opacity: 1, direction: 'top', offset: [0, -8] });
+      l.on('mouseover', () => { if (evals.get(f.properties.geoid).tier || state.showNone) { hovered = l; l.setStyle({ weight: 2, color: css('--ink'), opacity: 1 }); l.bringToFront(); } });
+      l.on('mouseout', () => { if (hovered === l) { l.setStyle(styleFor(f.properties)); hovered = null; } });
+      l.on('click', () => { if (evals.get(f.properties.geoid).tier || state.showNone) L.popup({ maxWidth: 340 }).setLatLng(l.getBounds().getCenter()).setContent(detailHtml(f.properties)).openOn(map); });
+    },
+  }).addTo(map);
+  if (feats.length) map.fitBounds(layer.getBounds().pad(0.02));
+  function restyle() { layer.eachLayer(l => l.setStyle(styleFor(l.feature.properties))); }
+  function refresh() { recompute(); renderLegend(); restyle(); }
+  renderLegend();
+
+  // ---- theme ---------------------------------------------------------------
+  setBase();
+  $('btnTheme').addEventListener('click', () => { document.documentElement.dataset.theme = isDark() ? 'light' : 'dark'; setBase(); refresh(); });
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if (!document.documentElement.dataset.theme) { setBase(); refresh(); } });
+
+  // ---- address search (OpenStreetMap Nominatim, limited to the SF bounding box) ----
+  function pointInRing(pt, ring) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i], [xj, yj] = ring[j];
+      if (((yi > pt[1]) !== (yj > pt[1])) && (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+  function blockAt(lng, lat) {
+    const pt = [lng, lat];
+    for (const f of feats) {
+      const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+      for (const poly of polys) if (pointInRing(pt, poly[0]) && !poly.slice(1).some(h => pointInRing(pt, h))) return f;
+    }
+    return null;
+  }
+  let marker = null;
+  $('searchForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const q = $('q').value.trim(); if (!q) return;
+    $('msg').textContent = 'Searching…';
+    try {
+      const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&bounded=1&viewbox=-122.52,37.83,-122.35,37.70&q=' + encodeURIComponent(q);
+      const res = await (await fetch(url, { headers: { Accept: 'application/json' } })).json();
+      if (!res.length) { $('msg').textContent = 'No match inside San Francisco.'; return; }
+      const lat = +res[0].lat, lng = +res[0].lon;
+      if (marker) marker.remove();
+      marker = L.circleMarker([lat, lng], { radius: 7, color: css('--ink'), weight: 2, fillColor: css('--surface'), fillOpacity: 1 }).addTo(map);
+      map.setView([lat, lng], 17);
+      const f = blockAt(lng, lat);
+      $('msg').textContent = res[0].display_name.split(',').slice(0, 2).join(',');
+      if (f) L.popup({ maxWidth: 340 }).setLatLng([lat, lng]).setContent(detailHtml(f.properties)).openOn(map);
+      else $('msg').textContent += ' — not inside a mapped block';
+    } catch (err) { $('msg').textContent = 'Search failed (needs internet access to nominatim.openstreetmap.org).'; }
+  });
+
+  // ---- table view + CSV --------------------------------------------------------
+  function rowsForExport() {
+    return feats.map(f => {
+      const p = f.properties, { ev } = evals.get(p.geoid);
+      const isps = [...ev.per.entries()].filter(([i, e]) => e.nMatch).map(([i]) => providers[i].name);
+      return { p, ev, isps };
+    });
+  }
+  const modal = $('modal');
+  $('btnTable').addEventListener('click', () => {
+    const LIMIT = 1500;
+    const all = rowsForExport().filter(r => r.ev.nMatch).sort((a, b) => b.ev.nMatch - a.ev.nMatch);
+    const rows = all.slice(0, LIMIT);
+    $('modalNote').textContent = rows.length < all.length ? `showing ${fmt(LIMIT)} of ${fmt(all.length)} blocks; the CSV has all` : `${fmt(all.length)} blocks`;
+    $('dataTable').innerHTML =
+      '<thead><tr><th>Block GEOID</th><th>Matching ISPs</th><th>Matching loc.</th><th>All fiber loc.</th><th>Best speed</th><th>Housing units</th></tr></thead><tbody>' +
+      rows.map(({ p, ev, isps }) => `<tr data-geoid="${p.geoid}"><td>${p.geoid}</td><td>${isps.join(', ')}</td><td>${fmt(ev.nMatch)}</td><td>${fmt(ev.nAll)}</td><td>${speed(ev.best)}</td><td>${fmt(p.hu)}</td></tr>`).join('') + '</tbody>';
+    modal.classList.add('open');
+  });
+  $('dataTable').addEventListener('click', (e) => {
+    const tr = e.target.closest('tr[data-geoid]'); if (!tr) return;
+    const l = layer.getLayers().find(x => x.feature.properties.geoid === tr.dataset.geoid);
+    if (l) { modal.classList.remove('open'); map.fitBounds(l.getBounds().pad(1.5)); l.openTooltip(l.getBounds().getCenter()); }
+  });
+  $('btnClose').addEventListener('click', () => modal.classList.remove('open'));
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') modal.classList.remove('open'); });
+  $('btnCsv').addEventListener('click', () => {
+    const q = (s) => '"' + String(s).replace(/"/g, '""') + '"';
+    const cols = ['geoid', 'housing_units', 'population', 'fiber_locations_any_isp', 'matching_locations', 'best_down_mbps', 'matching_isps']
+      .concat(providers.flatMap(p => [`${p.name}_locations`, `${p.name}_max_down_mbps`]));
+    const lines = [cols.map(q).join(',')];
+    for (const { p, ev, isps } of rowsForExport()) {
+      const cells = [p.geoid, p.hu, p.pop, ev.nAll, ev.nMatch, ev.best, isps.join('; ')]
+        .concat(providers.flatMap((_, i) => { const e = ev.per.get(i); return e ? [e.n, e.down] : [0, 0]; }));
+      lines.push(cells.map(q).join(','));
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
+    a.download = 'sf_fiber_blocks.csv'; a.click(); URL.revokeObjectURL(a.href);
+  });
+})();
+</script>
+</body>
+</html>

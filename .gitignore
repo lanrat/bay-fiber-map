@@ -1,0 +1,9 @@
+# FCC downloads (large; re-fetch with scripts/fetch_fcc.py)
+data/raw/*
+!data/raw/.gitkeep
+# generated map data (rebuild with scripts/build_map.py)
+site/data/*
+!site/data/.gitkeep
+__pycache__/
+*.pyc
+.venv/
